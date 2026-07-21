@@ -21,6 +21,14 @@ optimizations:
     enabled: true
   play-protocol-flush-consolidation:
     enabled: true
+  play-protocol-lazy-write-scheduling:
+    enabled: true
+  network-zero-copy-decoding:
+    enabled: true
+  network-frame-prefix-in-place:
+    enabled: true
+  explosion-broadcast-optimization:
+    enabled: true
 ```
 
 각 기능은 `enabled` 하나로만 켜거나 끕니다. 설정 변경 뒤에는 서버를 완전히 재시작하십시오.
@@ -46,7 +54,30 @@ Paper는 이미 메인 서버 tick에서 생성된 플레이어 패킷을 묶습
 - 패킷 write 순서와 future listener를 별도 큐로 옮기거나 재생하지 않습니다.
 - `PLAY -> CONFIGURATION -> PLAY` 전환 때 handler 모드를 함께 전환합니다.
 - 기존 Paper JVM 옵션 `-DPaper.disableFlushConsolidate=true`가 지정되면 이 토글보다 우선하여 consolidation handler를 설치하지 않습니다.
-- PulseNet의 packet 재분류·재정렬, bundle 변환, explosion chunk 재전송, 별도 write queue는 포팅하지 않습니다. Paper 26.1.2가 이미 tick flush와 section block update batching을 수행하며, 해당 기능들은 패킷 경계·future listener·프로토콜 전환 순서를 바꿀 수 있기 때문입니다.
+
+### PLAY write scheduling
+
+Paper가 메인 서버 tick 동안 flush를 정지한 PLAY 패킷은 기존과 똑같이 패킷마다 하나의 FIFO Netty task를 사용하되, 각 task가 selector를 따로 깨우지 않도록 `lazyExecute`로 등록합니다. tick 끝의 기존 normal flush task가 앞선 write task 뒤에 들어가 event loop를 깨웁니다.
+
+- task 수, 패킷 순서, promise와 listener 완료 순서는 바뀌지 않습니다.
+- 즉시 flush, 비동기/plugin thread, pending/unready/extra packet, `LOGIN`·`CONFIGURATION` 경로는 기존 `execute`를 사용합니다.
+- 별도 single-drain queue가 후발 패킷을 흡수해 protocol transition이나 plugin raw write를 추월하는 구조는 사용하지 않습니다.
+
+### Network zero-copy decoding
+
+완성된 inbound frame과 압축 envelope에서 `uncompressed-length=0`인 payload는 새 `ByteBuf`로 복사하지 않고 retained slice로 다음 decoder에 넘깁니다. heap, direct, composite 입력과 VarInt 길이 경계를 테스트하며, 기능을 끄면 기존 `readBytes` 복사 경로를 그대로 사용합니다.
+
+### In-place frame prefix
+
+Packet/Compression encoder가 최대 3바이트의 frame-length headroom을 예약합니다. 버퍼가 단독 소유 root buffer이고 writable·contiguous일 때만 그 공간에 VarInt 길이를 기록합니다. headroom이 없거나 shared, sliced, composite, read-only 또는 제3자 버퍼이면 기존 allocate-and-copy 경로로 자동 전환합니다. 압축·암호화 handler와 하나의 원래 promise는 그대로 유지합니다.
+
+### Explosion broadcast optimization
+
+폭발마다 월드 전체 플레이어를 순회하는 대신 Moonrise가 이미 유지하는 `GENERAL_SMALL` 주변 플레이어 인덱스에서 후보를 얻은 뒤, 기존의 정확한 3차원 거리 조건 `< 4096.0`을 그대로 적용합니다. 청크 경계에서 실제 64블록 안쪽인 플레이어를 빠뜨리지 않도록 ±3청크 인덱스는 사용하지 않습니다.
+
+- 폭발 블록 변경은 Paper의 기존 section update batching을 유지합니다.
+- 전체 chunk 재전송, encoded buffer 공유, 자동 bundle 변환은 하지 않습니다.
+- 플레이어별 packet 객체를 공유하지 않아 ProtocolLib류의 player-specific outbound 변경 의미를 유지합니다.
 
 ## 빌드
 
@@ -107,7 +138,7 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 그 뒤 새 서버 디렉터리에서 부팅하여 다음을 확인합니다.
 
 - Paper 26.1.2 정상 부팅
-- `paper-global.yml`의 두 토글 생성
+- `paper-global.yml`의 여섯 토글 생성
 - 로그인/압축/PLAY 전환 오류 없음
 - 기존 Paper 플러그인 로딩
 - 기능을 각각 껐을 때 순정 Paper 코드 경로 사용
@@ -120,6 +151,6 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 - Pathetic Mobs에서 참조·각색한 upstream 부분: CC0-1.0
 - MobOpt 신규 코드와 서버 패치: 저장소에 적용되는 GPL 조건
 - Pathetic engine/API 5.4.6: MIT
-- PulseNet 코드는 사용하거나 복사하지 않았습니다. 네트워크 패치는 Paper와 Netty의 공개 동작을 기반으로 독자 구현했습니다.
+- PulseNet 코드는 사용하거나 복사하지 않았습니다. 공개된 기능 목표만 확인하고 Paper, Moonrise와 Netty의 공개 API/동작을 기준으로 이름·구조·경계값·테스트를 새로 설계했습니다.
 
 자세한 내용은 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하십시오.

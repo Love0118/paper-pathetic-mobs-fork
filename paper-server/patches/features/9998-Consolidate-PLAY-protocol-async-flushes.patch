@@ -1,40 +1,187 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: MobOpt Paper <mobopt@localhost>
-Date: Tue, 22 Jul 2026 01:20:00 +0900
-Subject: [PATCH] Consolidate PLAY protocol outside-read flushes
+Date: Wed, 22 Jul 2026 05:10:00 +0900
+Subject: [PATCH] Optimize Paper network framing and dispatch
 
-Paper already suspends automatic player flushes around the main tick. Extend
-Netty flush consolidation only after the outbound protocol reaches PLAY so
-flushes outside inbound reads share one event-loop flush. LOGIN, STATUS,
-HANDSHAKING, and CONFIGURATION retain the upstream immediate behavior,
-preserving compression and protocol boundaries.
+Keep Paper's packet FIFO, protocol transitions, promises, and listener
+semantics intact while removing avoidable transport overhead. Complete inbound
+frames and compression pass-through payloads can use retained slices. Outbound
+encoders reserve safe frame-prefix headroom and retain the original fallback
+for shared, sliced, composite, read-only, or third-party buffers.
 
+During Paper's server-thread flush suspension, PLAY writes use Netty's normal
+FIFO task queue without waking the selector for every packet; the existing
+normal end-of-tick flush supplies the wakeup. Pending, async, immediate-flush,
+and non-PLAY writes keep normal scheduling. Queued packet actions also avoid a
+per-entry AtomicBoolean and capturing delegate allocation.
+
+Explosion recipients are selected from Moonrise's maintained wide nearby-player
+index before the original strict three-dimensional 64-block check. Section
+block updates, packet construction, compression, encryption, and plugin-visible
+packet objects are unchanged.
+
+diff --git a/net/minecraft/network/CompressionDecoder.java b/net/minecraft/network/CompressionDecoder.java
+index 6c89480..ea8e3a8 100644
+--- a/net/minecraft/network/CompressionDecoder.java
++++ b/net/minecraft/network/CompressionDecoder.java
+@@ -16,25 +16,37 @@ public class CompressionDecoder extends ByteToMessageDecoder {
+     private Inflater inflater;
+     private int threshold;
+     private boolean validateDecompressed;
++    private final boolean zeroCopyPassthrough;
+
+     // Paper start - Use Velocity cipher
+     @io.papermc.paper.annotation.DoNotUse
+     public CompressionDecoder(final int threshold, final boolean validateDecompressed) {
+-        this(null, threshold, validateDecompressed);
++        this(null, threshold, validateDecompressed, zeroCopyPassthroughEnabled());
+     }
+     public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed) {
++        this(compressor, threshold, validateDecompressed, zeroCopyPassthroughEnabled());
++    }
++    public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed, final boolean zeroCopyPassthrough) {
+         this.threshold = threshold;
+         this.validateDecompressed = validateDecompressed;
+         this.inflater = compressor == null ? new Inflater() : null;
+         this.compressor = compressor;
++        this.zeroCopyPassthrough = zeroCopyPassthrough;
+         // Paper end - Use Velocity cipher
+     }
+
++    private static boolean zeroCopyPassthroughEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.networkZeroCopyDecoding.enabled;
++    }
++
+     @Override
+     protected void decode(final ChannelHandlerContext ctx, final ByteBuf in, final List<Object> out) throws Exception {
+         int uncompressedLength = VarInt.read(in);
+         if (uncompressedLength == 0) {
+-            out.add(in.readBytes(in.readableBytes()));
++            final int readableBytes = in.readableBytes();
++            out.add(this.zeroCopyPassthrough ? in.readRetainedSlice(readableBytes) : in.readBytes(readableBytes));
+         } else {
+             if (this.validateDecompressed) {
+                 if (uncompressedLength < this.threshold) {
+diff --git a/net/minecraft/network/CompressionEncoder.java b/net/minecraft/network/CompressionEncoder.java
+index 01bc385..309e148 100644
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -10,12 +10,16 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     private final @org.jspecify.annotations.Nullable Deflater deflater; // Paper - Use Velocity cipher
+     private final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor; // Paper - Use Velocity cipher
+     private int threshold;
++    private final boolean reserveFramePrefix;
+
+     // Paper start - Use Velocity cipher
+     public CompressionEncoder(final int threshold) {
+-        this(null, threshold);
++        this(null, threshold, reserveFramePrefixEnabled());
+     }
+     public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold) {
++        this(compressor, threshold, reserveFramePrefixEnabled());
++    }
++    public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold, final boolean reserveFramePrefix) {
+         this.threshold = threshold;
+         if (compressor == null) {
+             this.encodeBuf = new byte[8192];
+@@ -25,9 +29,16 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             this.deflater = null;
+         }
+         this.compressor = compressor;
++        this.reserveFramePrefix = reserveFramePrefix;
+         // Paper end - Use Velocity cipher
+     }
+
++    private static boolean reserveFramePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.networkFramePrefixInPlace.enabled;
++    }
++
+     @Override
+     protected void encode(final ChannelHandlerContext ctx, final ByteBuf uncompressed, final ByteBuf out) throws Exception { // Paper - Use Velocity cipher
+         int uncompressedLength = uncompressed.readableBytes();
+@@ -78,6 +89,7 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     // Paper start - Use Velocity cipher
+     @Override
+     protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final ByteBuf msg, final boolean preferDirect) throws Exception {
++        final ByteBuf output;
+         if (this.compressor != null) {
+             // We allocate bytes to be compressed plus 1 byte. This covers two cases:
+             //
+@@ -87,11 +99,17 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             //    size the compressed size will ever be is the input size minus one.
+             // - Uncompressed
+             //    This is fairly obvious - we will then have one more than the uncompressed size.
+-            final int initialBufferSize = msg.readableBytes() + 1;
+-            return com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++            final int initialBufferSize = msg.readableBytes() + 1 + (this.reserveFramePrefix ? Varint21LengthFieldPrepender.MAX_VARINT21_BYTES : 0);
++            output = com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++        } else {
++            output = super.allocateBuffer(ctx, msg, preferDirect);
+         }
+
+-        return super.allocateBuffer(ctx, msg, preferDirect);
++        if (this.reserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+
+     @Override
 diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 837bb40..9482139 100644
 --- a/net/minecraft/network/Connection.java
 +++ b/net/minecraft/network/Connection.java
-@@ -64,2 +64,3 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -62,6 +62,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     public static final Marker PACKET_RECEIVED_MARKER = Util.make(MarkerFactory.getMarker("PACKET_RECEIVED"), m -> m.add(PACKET_MARKER));
+     public static final Marker PACKET_SENT_MARKER = Util.make(MarkerFactory.getMarker("PACKET_SENT"), m -> m.add(PACKET_MARKER));
      private static final ProtocolInfo<ServerHandshakePacketListener> INITIAL_PROTOCOL = HandshakeProtocols.SERVERBOUND;
 +    public static final String FLUSH_CONSOLIDATION_HANDLER = "mobopt-flush-consolidation"; // MobOpt - named PLAY-aware flush consolidation handler
      private final PacketFlow receiving;
-@@ -85,2 +86,3 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private volatile boolean sendLoginDisconnect = true;
+     private final Queue<WrappedConsumer> pendingActions = Queues.newConcurrentLinkedQueue(); // Paper - Optimize network
+@@ -83,6 +84,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private float averageSentPackets;
+     private int tickCount;
      private boolean handlingFault;
 +    private boolean consolidateFlushesOutsideRead; // MobOpt - consolidate PLAY-state outside-read flushes
++    private volatile boolean deferPlayWriteWakeups; // MobOpt - avoid redundant selector wakeups during tick batching
      private volatile @Nullable DisconnectionDetails delayedDisconnect;
-@@ -345,3 +347,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private @Nullable BandwidthDebugMonitor bandwidthDebugMonitor;
+     public String hostname = ""; // CraftBukkit - add field
+@@ -113,7 +116,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private void killForPacketSpam() {
+         this.sendPacket(new ClientboundDisconnectPacket(io.papermc.paper.adventure.PaperAdventure.asVanilla(io.papermc.paper.configuration.GlobalConfiguration.get().packetLimiter.kickMessage)), PacketSendListener.thenRun(() -> {
+             this.disconnect(io.papermc.paper.adventure.PaperAdventure.asVanilla(io.papermc.paper.configuration.GlobalConfiguration.get().packetLimiter.kickMessage));
+-        }), true);
++        }), true, false);
+         this.setReadOnly();
+         this.stopReadingPackets = true;
+     }
+@@ -343,8 +346,43 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         }
+
          boolean isLoginProtocol = protocol.id() == ConnectionProtocol.LOGIN;
 -        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> this.sendLoginDisconnect = isLoginProtocol)));
 +        // MobOpt start - consolidate only PLAY-state outside-read flushes
 +        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> {
 +            this.sendLoginDisconnect = isLoginProtocol;
-+            this.updateFlushConsolidation(ctx, protocol.id());
++            this.updatePlayProtocolOptimizations(ctx, protocol.id());
 +        })));
 +        // MobOpt end - consolidate only PLAY-state outside-read flushes
-     }
-@@ -349,3 +356,30 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
++    }
++
 +    // MobOpt start - consolidate only PLAY-state outside-read flushes
-+    private void updateFlushConsolidation(final ChannelHandlerContext ctx, final ConnectionProtocol protocol) {
++    private void updatePlayProtocolOptimizations(final ChannelHandlerContext ctx, final ConnectionProtocol protocol) {
 +        final io.papermc.paper.configuration.GlobalConfiguration configuration =
 +            io.papermc.paper.configuration.GlobalConfiguration.get();
++        this.deferPlayWriteWakeups = configuration != null
++            && configuration.optimizations.playProtocolLazyWriteScheduling.enabled
++            && protocol == ConnectionProtocol.PLAY;
 +        final boolean next = configuration != null
 +            && configuration.optimizations.playProtocolFlushConsolidation.enabled
 +            && protocol == ConnectionProtocol.PLAY;
@@ -55,16 +202,330 @@ diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Conne
 +            )
 +        );
 +        this.consolidateFlushesOutsideRead = next;
-+    }
+     }
 +    // MobOpt end - consolidate only PLAY-state outside-read flushes
-+
+
      public void setListenerForServerboundHandshake(final PacketListener packetListener) {
          if (this.packetListener != null) {
-             throw new IllegalStateException("Listener already set");
+@@ -382,7 +420,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         this.disconnectListener = listener;
+         this.runOnceConnected(connection -> {
+             this.setupInboundProtocol(inbound, listener);
+-            connection.sendPacket(new ClientIntentionPacket(SharedConstants.getCurrentVersion().protocolVersion(), hostName, port, intent), null, true);
++            connection.sendPacket(new ClientIntentionPacket(SharedConstants.getCurrentVersion().protocolVersion(), hostName, port, intent), null, true, false);
+             this.setupOutboundProtocol(outbound);
+         });
+     }
+@@ -396,6 +434,10 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     }
+
+     public void send(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
++        this.send(packet, listener, flush, false);
++    }
++
++    public void send(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush, final boolean deferWakeup) {
+         // Paper start - Optimize network: Handle oversized packets better
+         final boolean connected = this.isConnected();
+         if (!connected && !this.preparing) {
+@@ -406,7 +448,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         if (connected && (InnerUtil.canSendImmediate(this, packet)
+             || (io.papermc.paper.util.MCUtil.isMainThread() && packet.isReady() && this.pendingActions.isEmpty()
+             && (packet.getExtraPackets() == null || packet.getExtraPackets().isEmpty())))) {
+-            this.sendPacket(packet, listener, flush);
++            this.sendPacket(packet, listener, flush, deferWakeup);
+         } else {
+             // Write the packets to the queue, then flush - antixray hooks there already
+             final java.util.List<Packet<?>> extraPackets = InnerUtil.buildExtraPackets(packet);
+@@ -440,12 +482,16 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         }
+     }
+
+-    private void sendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
++    private void sendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush, final boolean deferWakeup) {
+         this.sentPackets++;
+         if (this.channel.eventLoop().inEventLoop()) {
+             this.doSendPacket(packet, listener, flush);
+         } else {
+-            this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
++            io.papermc.paper.optimization.network.PlayWriteDispatch.execute(
++                this.channel.eventLoop(),
++                () -> this.doSendPacket(packet, listener, flush),
++                deferWakeup && !flush && this.deferPlayWriteWakeups
++            );
+         }
+     }
+
+@@ -919,33 +965,51 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     }
+
+     private static class WrappedConsumer implements Consumer<Connection> {
+-        private final Consumer<Connection> delegate;
+-        private final java.util.concurrent.atomic.AtomicBoolean consumed = new java.util.concurrent.atomic.AtomicBoolean(false);
++        private static final java.util.concurrent.atomic.AtomicIntegerFieldUpdater<WrappedConsumer> CONSUMED_UPDATER =
++            java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater(WrappedConsumer.class, "consumed");
++        private final @Nullable Consumer<Connection> delegate;
++        private volatile int consumed;
+
+         private WrappedConsumer(final Consumer<Connection> delegate) {
+             this.delegate = delegate;
+         }
+
++        protected WrappedConsumer() {
++            this.delegate = null;
++        }
++
+         @Override
+         public void accept(final Connection connection) {
++            if (this.delegate == null) {
++                throw new IllegalStateException("Missing connection action delegate");
++            }
+             this.delegate.accept(connection);
+         }
+
+         public boolean tryMarkConsumed() {
+-            return consumed.compareAndSet(false, true);
++            return CONSUMED_UPDATER.compareAndSet(this, 0, 1);
+         }
+
+         public boolean isConsumed() {
+-            return consumed.get();
++            return this.consumed != 0;
+         }
+     }
+
+     private static final class PacketSendAction extends WrappedConsumer {
+         private final Packet<?> packet;
++        private final @Nullable ChannelFutureListener channelFutureListener;
++        private final boolean flush;
+
+         private PacketSendAction(final Packet<?> packet, @Nullable final ChannelFutureListener channelFutureListener, final boolean flush) {
+-            super(connection -> connection.sendPacket(packet, channelFutureListener, flush));
++            super();
+             this.packet = packet;
++            this.channelFutureListener = channelFutureListener;
++            this.flush = flush;
++        }
++
++        @Override
++        public void accept(final Connection connection) {
++            connection.sendPacket(this.packet, this.channelFutureListener, this.flush, false);
+         }
+     }
+     // Paper end - Optimize network
+diff --git a/net/minecraft/network/PacketEncoder.java b/net/minecraft/network/PacketEncoder.java
+index 27316db..3376903 100644
+--- a/net/minecraft/network/PacketEncoder.java
++++ b/net/minecraft/network/PacketEncoder.java
+@@ -12,9 +12,31 @@ import org.slf4j.Logger;
+ public class PacketEncoder<T extends PacketListener> extends MessageToByteEncoder<Packet<T>> {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private final ProtocolInfo<T> protocolInfo;
++    private final boolean reserveFramePrefix;
+
+     public PacketEncoder(final ProtocolInfo<T> protocolInfo) {
++        this(protocolInfo, reserveFramePrefixEnabled());
++    }
++
++    public PacketEncoder(final ProtocolInfo<T> protocolInfo, final boolean reserveFramePrefix) {
+         this.protocolInfo = protocolInfo;
++        this.reserveFramePrefix = reserveFramePrefix;
++    }
++
++    private static boolean reserveFramePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.networkFramePrefixInPlace.enabled;
++    }
++
++    @Override
++    protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final Packet<T> packet, final boolean preferDirect) throws Exception {
++        final ByteBuf output = super.allocateBuffer(ctx, packet, preferDirect);
++        if (this.reserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+
+     static final ThreadLocal<java.util.Locale> ADVENTURE_LOCALE = ThreadLocal.withInitial(() -> null); // Paper - adventure; set player's locale
+diff --git a/net/minecraft/network/Varint21FrameDecoder.java b/net/minecraft/network/Varint21FrameDecoder.java
+index a490f5e..4d70054 100644
+--- a/net/minecraft/network/Varint21FrameDecoder.java
++++ b/net/minecraft/network/Varint21FrameDecoder.java
+@@ -12,9 +12,21 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+     private static final int MAX_VARINT21_BYTES = 3;
+     private final ByteBuf helperBuf = Unpooled.directBuffer(3);
+     private final @Nullable BandwidthDebugMonitor monitor;
++    private final boolean zeroCopyFrames;
+
+     public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor) {
++        this(monitor, zeroCopyFramesEnabled());
++    }
++
++    public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor, final boolean zeroCopyFrames) {
+         this.monitor = monitor;
++        this.zeroCopyFrames = zeroCopyFrames;
++    }
++
++    private static boolean zeroCopyFramesEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.networkZeroCopyDecoding.enabled;
+     }
+
+     @Override
+@@ -63,7 +75,7 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+                     this.monitor.onReceive(length + VarInt.getByteSize(length));
+                 }
+
+-                out.add(in.readBytes(length));
++                out.add(this.zeroCopyFrames ? in.readRetainedSlice(length) : in.readBytes(length));
+             }
+         }
+     }
+diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minecraft/network/Varint21LengthFieldPrepender.java
+index 83539ec..2b8e6b3 100644
+--- a/net/minecraft/network/Varint21LengthFieldPrepender.java
++++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
+@@ -4,22 +4,69 @@ import io.netty.buffer.ByteBuf;
+ import io.netty.channel.ChannelHandlerContext;
+ import io.netty.channel.ChannelHandler.Sharable;
+ import io.netty.handler.codec.EncoderException;
+-import io.netty.handler.codec.MessageToByteEncoder;
++import io.netty.handler.codec.MessageToMessageEncoder;
++import java.util.List;
+
+ @Sharable
+-public class Varint21LengthFieldPrepender extends MessageToByteEncoder<ByteBuf> {
++public class Varint21LengthFieldPrepender extends MessageToMessageEncoder<ByteBuf> {
+     public static final int MAX_VARINT21_BYTES = 3;
++    private final boolean prependInPlace;
++
++    public Varint21LengthFieldPrepender() {
++        this(prependInPlaceEnabled());
++    }
++
++    public Varint21LengthFieldPrepender(final boolean prependInPlace) {
++        this.prependInPlace = prependInPlace;
++    }
++
++    private static boolean prependInPlaceEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.networkFramePrefixInPlace.enabled;
++    }
+
+     @Override
+-    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final ByteBuf out) {
++    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final List<Object> out) {
+         int bodyLength = msg.readableBytes();
+         int headerLength = VarInt.getByteSize(bodyLength);
+         if (headerLength > 3) {
+             throw new EncoderException("Packet too large: size " + bodyLength + " is over 8");
+         }
+
+-        out.ensureWritable(headerLength + bodyLength);
+-        VarInt.write(out, bodyLength);
+-        out.writeBytes(msg, msg.readerIndex(), bodyLength);
++        if (this.canPrependInPlace(msg)) {
++            final int headerIndex = msg.readerIndex() - headerLength;
++            writeVarInt(msg, headerIndex, bodyLength);
++            msg.readerIndex(headerIndex);
++            out.add(msg.retain());
++            return;
++        }
++
++        final ByteBuf framed = ctx.alloc().ioBuffer(headerLength + bodyLength);
++        try {
++            VarInt.write(framed, bodyLength);
++            framed.writeBytes(msg, msg.readerIndex(), bodyLength);
++            out.add(framed);
++        } catch (final RuntimeException | Error throwable) {
++            framed.release();
++            throw throwable;
++        }
++    }
++
++    private boolean canPrependInPlace(final ByteBuf msg) {
++        return this.prependInPlace
++            && msg.readerIndex() >= MAX_VARINT21_BYTES
++            && msg.refCnt() == 1
++            && msg.unwrap() == null
++            && msg.nioBufferCount() == 1
++            && !msg.isReadOnly();
++    }
++
++    private static void writeVarInt(final ByteBuf target, int index, int value) {
++        while ((value & -128) != 0) {
++            target.setByte(index++, value & 127 | 128);
++            value >>>= 7;
++        }
++        target.setByte(index, value);
+     }
+ }
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 0275b37..e3d71ee 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2007,12 +2007,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         // CraftBukkit end
+         ParticleOptions explosionParticle = explosion.isSmall() ? smallExplosionParticles : largeExplosionParticles;
+
+-        for (ServerPlayer player : this.players) {
++        // MobOpt start - restrict explosion packet scans with Moonrise's maintained nearby-player index
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        final boolean optimizeExplosionRecipients = configuration != null
++            && configuration.optimizations.explosionBroadcastOptimization.enabled;
++        final Iterable<ServerPlayer> explosionRecipients;
++        if (optimizeExplosionRecipients) {
++            final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> nearbyPlayers =
++                this.moonrise$getNearbyPlayers().getPlayersByBlock(
++                    Mth.floor(center.x),
++                    Mth.floor(center.z),
++                    ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.GENERAL_SMALL
++                );
++            explosionRecipients = nearbyPlayers == null ? java.util.List.of() : nearbyPlayers;
++        } else {
++            explosionRecipients = this.players;
++        }
++
++        for (ServerPlayer player : explosionRecipients) {
+             if (player.distanceToSqr(center) < 4096.0) {
+                 Optional<Vec3> playerKnockback = Optional.ofNullable(explosion.getHitPlayers().get(player));
+                 player.connection.send(new ClientboundExplodePacket(center, r, blockCount, playerKnockback, explosionParticle, explosionSound, blockParticles));
+             }
+         }
++        // MobOpt end - restrict explosion packet scans with Moonrise's maintained nearby-player index
+
+         return explosion; // CraftBukkit
+     }
+diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index acfd302..4fcb899 100644
+--- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -319,7 +319,12 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+         boolean flush = !this.suspendFlushingOnServerThread || !this.server.isSameThread();
+
+         try {
+-            this.connection.send(packet, listener, flush);
++            this.connection.send(
++                packet,
++                listener,
++                flush,
++                !flush && this.suspendFlushingOnServerThread && this.server.isSameThread()
++            ); // MobOpt - no-wakeup scheduling is safe only while the server-thread flush is suspended
+         } catch (Throwable t) {
+             CrashReport report = CrashReport.forThrowable(t, "Sending packet");
+             CrashReportCategory category = report.addCategory("Packet being sent");
 diff --git a/net/minecraft/server/network/ServerConnectionListener.java b/net/minecraft/server/network/ServerConnectionListener.java
+index ffb406e..17f89b3 100644
 --- a/net/minecraft/server/network/ServerConnectionListener.java
 +++ b/net/minecraft/server/network/ServerConnectionListener.java
-@@ -96,4 +96,4 @@ public class ServerConnectionListener {
+@@ -93,7 +93,7 @@ public class ServerConnectionListener {
+                                     } catch (ChannelException var5) {
+                                     }
+
 -                                    if (!disableFlushConsolidation) channel.pipeline().addFirst(new io.netty.handler.flush.FlushConsolidationHandler()); // Paper - Optimize network
 +                                    if (!disableFlushConsolidation) channel.pipeline().addFirst(Connection.FLUSH_CONSOLIDATION_HANDLER, new io.netty.handler.flush.FlushConsolidationHandler()); // Paper - Optimize network; MobOpt - named for PLAY-aware replacement
                                      ChannelPipeline pipeline = channel.pipeline().addLast(HandlerNames.TIMEOUT, new ReadTimeoutHandler(30));
