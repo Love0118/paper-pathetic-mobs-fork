@@ -9,71 +9,130 @@ import java.util.concurrent.atomic.LongAdder;
  * verification JVM property is enabled.
  */
 public final class MobOptRuntimeMetrics {
-    public static final boolean ENABLED = Boolean.getBoolean("paper.mobopt.verifyFastPaths");
-    private static final String RUN_ID = sanitizeRunId(System.getProperty("paper.mobopt.verifyFastPaths.runId", "unset"));
-    private static final State STATE = ENABLED ? new State() : null;
-
-    static {
-        if (ENABLED) {
-            Runtime.getRuntime().addShutdownHook(new Thread(MobOptRuntimeMetrics::emitOnce, "MobOpt fast-path metrics"));
-        }
-    }
+    public static final boolean ENABLED = requestedEnabled();
+    private static final String RUN_ID = readRunId();
+    private static final State STATE = initializeState();
 
     private MobOptRuntimeMetrics() {
     }
 
     public static void frameDecoded(final boolean retained, final int bytes) {
-        if (!ENABLED) {
+        final State state = STATE;
+        if (state == null) {
             return;
         }
-        (retained ? STATE.frameRetained : STATE.frameCopied).add(bytes);
+        try {
+            (retained ? state.frameRetained : state.frameCopied).add(bytes);
+        } catch (final RuntimeException ignored) {
+        }
     }
 
     public static void compressionPassthrough(final boolean retained, final int bytes) {
-        if (!ENABLED) {
+        final State state = STATE;
+        if (state == null) {
             return;
         }
-        (retained ? STATE.compressionRetained : STATE.compressionCopied).add(bytes);
+        try {
+            (retained ? state.compressionRetained : state.compressionCopied).add(bytes);
+        } catch (final RuntimeException ignored) {
+        }
     }
 
     public static void framePrefixInPlace(final int bodyBytes) {
-        if (ENABLED) {
-            STATE.prefixInPlace.add(bodyBytes);
+        final State state = STATE;
+        if (state == null) {
+            return;
+        }
+        try {
+            state.prefixInPlace.add(bodyBytes);
+        } catch (final RuntimeException ignored) {
         }
     }
 
     public static void framePrefixFallback(final boolean optimizationEnabled, final int bodyBytes) {
-        if (!ENABLED) {
+        final State state = STATE;
+        if (state == null) {
             return;
         }
-        (optimizationEnabled ? STATE.prefixEnabledIneligible : STATE.prefixDisabled).add(bodyBytes);
+        try {
+            (optimizationEnabled ? state.prefixEnabledIneligible : state.prefixDisabled).add(bodyBytes);
+        } catch (final RuntimeException ignored) {
+        }
     }
 
-    public static void playWriteDispatch(final boolean lazy) {
-        if (!ENABLED) {
+    public static void writeDispatch(final boolean lazy) {
+        final State state = STATE;
+        if (state == null) {
             return;
         }
-        (lazy ? STATE.playLazyTasks : STATE.playNormalTasks).increment();
+        try {
+            (lazy ? state.writeLazyTasks : state.writeNormalTasks).increment();
+        } catch (final RuntimeException ignored) {
+        }
     }
 
     public static void explosionLookup(final boolean indexed, final int worldPlayers, final int candidates) {
-        if (!ENABLED) {
+        final State state = STATE;
+        if (state == null) {
             return;
         }
-        (indexed ? STATE.explosionIndexedLookups : STATE.explosionFullScans).increment();
-        STATE.explosionWorldPlayers.add(worldPlayers);
-        STATE.explosionCandidates.add(candidates);
-    }
-
-    public static void explosionRecipient() {
-        if (ENABLED) {
-            STATE.explosionRecipients.increment();
+        try {
+            (indexed ? state.explosionIndexedLookups : state.explosionFullScans).increment();
+            state.explosionWorldPlayers.add(worldPlayers);
+            state.explosionCandidates.add(candidates);
+        } catch (final RuntimeException ignored) {
         }
     }
 
-    private static void emitOnce() {
-        if (STATE.emitted.compareAndSet(false, true)) {
-            System.out.println(formatSnapshot(STATE));
+    public static void explosionDistancePassed() {
+        final State state = STATE;
+        if (state == null) {
+            return;
+        }
+        try {
+            state.explosionDistancePassed.increment();
+        } catch (final RuntimeException ignored) {
+        }
+    }
+
+    private static boolean requestedEnabled() {
+        try {
+            return Boolean.parseBoolean(System.getProperty("paper.mobopt.verifyFastPaths", "false"));
+        } catch (final SecurityException | IllegalStateException ignored) {
+            return false;
+        }
+    }
+
+    private static String readRunId() {
+        if (!ENABLED) {
+            return "unset";
+        }
+        try {
+            return sanitizeRunId(System.getProperty("paper.mobopt.verifyFastPaths.runId", "unset"));
+        } catch (final SecurityException | IllegalStateException ignored) {
+            return "unset";
+        }
+    }
+
+    private static State initializeState() {
+        if (!ENABLED) {
+            return null;
+        }
+        try {
+            final State state = new State();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> emitOnce(state), "MobOpt fast-path metrics"));
+            return state;
+        } catch (final SecurityException | IllegalStateException ignored) {
+            return null;
+        }
+    }
+
+    private static void emitOnce(final State state) {
+        try {
+            if (state.emitted.compareAndSet(false, true)) {
+                System.out.println(formatSnapshot(state));
+            }
+        } catch (final RuntimeException ignored) {
         }
     }
 
@@ -87,13 +146,13 @@ public final class MobOptRuntimeMetrics {
             + state.prefixInPlace.format(" frame_prefix_in_place")
             + state.prefixEnabledIneligible.format(" frame_prefix_enabled_ineligible")
             + state.prefixDisabled.format(" frame_prefix_disabled")
-            + " play_lazy_tasks=" + state.playLazyTasks.sum()
-            + " play_normal_tasks=" + state.playNormalTasks.sum()
+            + " write_lazy_tasks=" + state.writeLazyTasks.sum()
+            + " write_normal_tasks=" + state.writeNormalTasks.sum()
             + " explosion_indexed_lookups=" + state.explosionIndexedLookups.sum()
             + " explosion_full_scans=" + state.explosionFullScans.sum()
             + " explosion_world_players=" + state.explosionWorldPlayers.sum()
             + " explosion_candidates=" + state.explosionCandidates.sum()
-            + " explosion_recipients=" + state.explosionRecipients.sum();
+            + " explosion_distance_passed=" + state.explosionDistancePassed.sum();
     }
 
     private static String sanitizeRunId(final String runId) {
@@ -131,12 +190,12 @@ public final class MobOptRuntimeMetrics {
         private final CountAndBytes prefixInPlace = new CountAndBytes();
         private final CountAndBytes prefixEnabledIneligible = new CountAndBytes();
         private final CountAndBytes prefixDisabled = new CountAndBytes();
-        private final LongAdder playLazyTasks = new LongAdder();
-        private final LongAdder playNormalTasks = new LongAdder();
+        private final LongAdder writeLazyTasks = new LongAdder();
+        private final LongAdder writeNormalTasks = new LongAdder();
         private final LongAdder explosionIndexedLookups = new LongAdder();
         private final LongAdder explosionFullScans = new LongAdder();
         private final LongAdder explosionWorldPlayers = new LongAdder();
         private final LongAdder explosionCandidates = new LongAdder();
-        private final LongAdder explosionRecipients = new LongAdder();
+        private final LongAdder explosionDistancePassed = new LongAdder();
     }
 }

@@ -433,8 +433,8 @@ index 83539ec..2b8e6b3 100644
 +            final int headerIndex = msg.readerIndex() - headerLength;
 +            writeVarInt(msg, headerIndex, bodyLength);
 +            msg.readerIndex(headerIndex);
-+            out.add(msg.retain());
 +            io.papermc.paper.optimization.MobOptRuntimeMetrics.framePrefixInPlace(bodyLength);
++            out.add(msg.retain());
 +            return;
 +        }
 +
@@ -442,8 +442,8 @@ index 83539ec..2b8e6b3 100644
 +        try {
 +            VarInt.write(framed, bodyLength);
 +            framed.writeBytes(msg, msg.readerIndex(), bodyLength);
-+            out.add(framed);
 +            io.papermc.paper.optimization.MobOptRuntimeMetrics.framePrefixFallback(this.prependInPlace, bodyLength);
++            out.add(framed);
 +        } catch (final RuntimeException | Error throwable) {
 +            framed.release();
 +            throw throwable;
@@ -505,7 +505,7 @@ index 0275b37..e3d71ee 100644
 +
 +        for (ServerPlayer player : explosionRecipients) {
              if (player.distanceToSqr(center) < 4096.0) {
-+                io.papermc.paper.optimization.MobOptRuntimeMetrics.explosionRecipient();
++                io.papermc.paper.optimization.MobOptRuntimeMetrics.explosionDistancePassed();
                  Optional<Vec3> playerKnockback = Optional.ofNullable(explosion.getHitPlayers().get(player));
                  player.connection.send(new ClientboundExplodePacket(center, r, blockCount, playerKnockback, explosionParticle, explosionSound, blockParticles));
              }

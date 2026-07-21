@@ -158,10 +158,10 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 
 - frame 및 compression passthrough: retained/copied 호출 수(`*_count`)와 payload 바이트(`*_bytes`)
 - frame prefix: in-place, 기능 ON이지만 부적격 fallback, 기능 OFF fallback의 호출 수와 body 바이트
-- PLAY write: lazy/normal event-loop task 수
-- explosion: indexed lookup/full scan 횟수, 조회 시점의 전체 월드 플레이어 합계, 후보 합계, 정확한 64블록 검사 뒤 실제 수신자 합계
+- write dispatch: selector wakeup을 미루는 lazy task와 `PlayWriteDispatch`를 통과한 모든 normal task 수. normal에는 비-PLAY 프로토콜 dispatch도 포함됩니다.
+- explosion: indexed lookup/full scan 횟수, 조회 시점의 전체 월드 플레이어 합계, 후보 합계, 정확한 64블록 거리 검사를 통과한 대상 합계. 마지막 값은 전송 완료 성공 횟수가 아닙니다.
 
-이 옵션은 경로 실행 여부와 처리량을 증명하는 진단용입니다. 성능 차이는 동일한 월드·플레이어·패킷 workload에서 토글 ON/OFF 실행의 CPU, allocation, tick 지표를 함께 비교하십시오.
+이 옵션은 경로 실행 여부와 처리량을 증명하는 진단용입니다. 종료 훅의 snapshot은 동시 갱신을 멈추지 않고 각 카운터를 읽는 best-effort 비원자적 합계입니다. 성능 차이는 동일한 월드·플레이어·패킷 workload에서 토글 ON/OFF 실행의 CPU, allocation, tick 지표를 함께 비교하십시오.
 
 ## 라이선스
 
