@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MobOpt Paper <mobopt@localhost>
+Date: Tue, 22 Jul 2026 01:15:00 +0900
+Subject: [PATCH] Use Pathetic for eligible ground mob paths
+
+Keep the Paper API untouched and intercept only safe single-target vanilla
+WalkNodeEvaluator requests supported by Pathetic Mobs. The evaluator remains
+prepared for either implementation, and a null result retains the upstream
+mod's vanilla fallback contract.
+
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -42,6 +42,30 @@ public class PathFinder {
+         Node start = this.nodeEvaluator.getStart();
+         if (start == null) {
+             return null;
+         } else {
++            // MobOpt start - Pathetic ground-mob pathfinding
++            Path optimizedPath;
++            try {
++                optimizedPath = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
++                    this.nodeEvaluator,
++                    this.nodeEvaluator.currentContext,
++                    region,
++                    mob,
++                    start,
++                    targetPositions,
++                    maxRange,
++                    accuracy,
++                    this.maxVisitedNodes,
++                    searchDepthMultiplier
++                );
++            } catch (RuntimeException | Error throwable) {
++                this.nodeEvaluator.done();
++                throw throwable;
++            }
++            if (optimizedPath != null) {
++                this.nodeEvaluator.done();
++                return optimizedPath;
++            }
++            // MobOpt end - Pathetic ground-mob pathfinding
+             // Paper start - Perf: remove streams and optimize collection
+             List<Map.Entry<Target, BlockPos>> map = Lists.newArrayList();
+-- 
+2.52.0.windows.1

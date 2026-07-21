@@ -1,4 +1,20 @@
-Paper [![Paper Build Status](https://img.shields.io/github/actions/workflow/status/PaperMC/Paper/build.yml?branch=main)](https://github.com/PaperMC/Paper/actions)
+# MobOpt Paper 1.21.8 Fork
+
+This repository is a Paper 1.21.8-compatible server fork with opt-in-compatible,
+server-internal mob pathfinding and networking optimizations. The public
+`paper-api` module is unchanged. See [MOBOPT.md](MOBOPT.md) for build, launch,
+configuration, compatibility, and fallback details.
+
+Build the distributable server with `scripts\build-server.ps1`, then launch it
+with `scripts\start-server.ps1`. This is an independent fork and is not an
+official PaperMC, Mojang, or Microsoft product; fork-specific issues belong in
+this repository rather than PaperMC support channels.
+
+---
+
+## Upstream Paper documentation
+
+Paper
 [![Discord](https://img.shields.io/discord/289587909051416579.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/papermc)
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/papermc?label=GitHub%20Sponsors)](https://github.com/sponsors/PaperMC)
 [![Open Collective](https://img.shields.io/opencollective/all/papermc?label=OpenCollective%20Sponsors)](https://opencollective.com/papermc)
@@ -63,9 +79,10 @@ java {
 
 How To (Compiling Jar From Source)
 ------
-To compile Paper, you need JDK 21 and an internet connection.
+To compile this fork, you need JDK 21, PowerShell 7, and an internet connection.
 
-Clone this repo, run `./gradlew applyPatches`, then `./gradlew createMojmapBundlerJar` from your terminal. You can find the compiled jar in the `paper-server/build/libs` directory.
+Run `scripts\build-server.ps1`. The distributable Paperclip JAR, checksums,
+and release ZIP are written to `dist/`.
 
 To get a full list of tasks, run `./gradlew tasks`.
 
