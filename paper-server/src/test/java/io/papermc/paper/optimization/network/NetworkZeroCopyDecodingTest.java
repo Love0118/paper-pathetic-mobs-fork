@@ -3,7 +3,10 @@ package io.papermc.paper.optimization.network;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.embedded.EmbeddedChannel;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 import net.minecraft.network.CompressionDecoder;
@@ -15,6 +18,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @Normal
 class NetworkZeroCopyDecodingTest {
@@ -36,18 +41,43 @@ class NetworkZeroCopyDecodingTest {
             input.writeBytes(new byte[] {10, 20, 30, 40});
             final int payloadIndex = input.readerIndex() + 1;
             final ByteBuf observer = input.retainedDuplicate();
-            final EmbeddedChannel channel = new EmbeddedChannel(new Varint21FrameDecoder(null, true));
+            final ChannelHandlerContext context = activeContext();
+            final ExposedFrameDecoder decoder = new ExposedFrameDecoder(true);
+            final List<Object> output = new ArrayList<>();
 
-            assertTrue(channel.writeInbound(input));
-            final ByteBuf decoded = channel.readInbound();
+            decoder.decodeFrame(context, input, output);
+            assertEquals(1, output.size());
+            final ByteBuf decoded = (ByteBuf)output.getFirst();
             decoded.setByte(0, 99);
             assertEquals(99, observer.getUnsignedByte(payloadIndex));
             assertEquals(4, decoded.readableBytes());
 
             decoded.release();
             observer.release();
-            channel.finishAndReleaseAll();
+            input.release();
+            decoder.releaseHelper(context);
         }
+    }
+
+    @Test
+    void disabledFrameOptimizationKeepsTheCopyPath() {
+        final ByteBuf input = Unpooled.buffer();
+        VarInt.write(input, 2);
+        input.writeBytes(new byte[] {11, 12});
+        final ByteBuf observer = input.retainedDuplicate();
+        final ChannelHandlerContext context = activeContext();
+        final ExposedFrameDecoder decoder = new ExposedFrameDecoder(false);
+        final List<Object> output = new ArrayList<>();
+
+        decoder.decodeFrame(context, input, output);
+        final ByteBuf decoded = (ByteBuf)output.getFirst();
+        decoded.setByte(0, 77);
+        assertEquals(11, observer.getUnsignedByte(1));
+
+        decoded.release();
+        observer.release();
+        input.release();
+        decoder.releaseHelper(context);
     }
 
     @Test
@@ -106,5 +136,27 @@ class NetworkZeroCopyDecodingTest {
         decoded.release();
         encoder.finishAndReleaseAll();
         decoder.finishAndReleaseAll();
+    }
+
+    private static ChannelHandlerContext activeContext() {
+        final Channel channel = mock(Channel.class);
+        when(channel.isActive()).thenReturn(true);
+        final ChannelHandlerContext context = mock(ChannelHandlerContext.class);
+        when(context.channel()).thenReturn(channel);
+        return context;
+    }
+
+    private static final class ExposedFrameDecoder extends Varint21FrameDecoder {
+        private ExposedFrameDecoder(final boolean zeroCopyFrames) {
+            super(null, zeroCopyFrames);
+        }
+
+        private void decodeFrame(final ChannelHandlerContext context, final ByteBuf input, final List<Object> output) {
+            super.decode(context, input, output);
+        }
+
+        private void releaseHelper(final ChannelHandlerContext context) {
+            super.handlerRemoved0(context);
+        }
     }
 }
