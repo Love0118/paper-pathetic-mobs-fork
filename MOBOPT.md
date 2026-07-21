@@ -152,9 +152,10 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 ```text
 -Dpaper.mobopt.verifyFastPaths=true
 -Dpaper.mobopt.verifyFastPaths.runId=enabled-run
+-Dpaper.mobopt.verifyFastPaths.outputFile=C:\server\mobopt-fastpath-metrics.txt
 ```
 
-정상 종료 로그의 `MOBOPT_FASTPATH_METRICS` 줄은 공백으로 구분된 `key=value` 형식입니다. `run_id`는 공백과 `=`을 `_`로 치환하고 최대 128자로 제한합니다.
+정상 종료 로그의 `MOBOPT_FASTPATH_METRICS` 줄은 공백으로 구분된 `key=value` 형식입니다. `outputFile`을 지정하면 콘솔과 동일한 한 줄을 해당 파일에도 덮어써서, 콘솔 스트림이 먼저 닫히는 환경에서도 결과를 회수할 수 있습니다. 경로가 잘못됐거나 기록이 거부돼도 서버 종료에는 영향을 주지 않습니다. `run_id`는 공백과 `=`을 `_`로 치환하고 최대 128자로 제한합니다.
 
 - frame 및 compression passthrough: retained/copied 호출 수(`*_count`)와 payload 바이트(`*_bytes`)
 - frame prefix: in-place, 기능 ON이지만 부적격 fallback, 기능 OFF fallback의 호출 수와 body 바이트

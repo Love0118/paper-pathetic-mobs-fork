@@ -1,5 +1,11 @@
 package io.papermc.paper.optimization;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -11,6 +17,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class MobOptRuntimeMetrics {
     public static final boolean ENABLED = requestedEnabled();
     private static final String RUN_ID = readRunId();
+    private static final Path OUTPUT_FILE = readOutputFile();
     private static final State STATE = initializeState();
 
     private MobOptRuntimeMetrics() {
@@ -114,6 +121,18 @@ public final class MobOptRuntimeMetrics {
         }
     }
 
+    private static Path readOutputFile() {
+        if (!ENABLED) {
+            return null;
+        }
+        try {
+            final String configured = System.getProperty("paper.mobopt.verifyFastPaths.outputFile", "");
+            return configured.isBlank() ? null : Path.of(configured).toAbsolutePath().normalize();
+        } catch (final SecurityException | IllegalStateException | InvalidPathException ignored) {
+            return null;
+        }
+    }
+
     private static State initializeState() {
         if (!ENABLED) {
             return null;
@@ -130,7 +149,21 @@ public final class MobOptRuntimeMetrics {
     private static void emitOnce(final State state) {
         try {
             if (state.emitted.compareAndSet(false, true)) {
-                System.out.println(formatSnapshot(state));
+                final String snapshot = formatSnapshot(state);
+                System.out.println(snapshot);
+                if (OUTPUT_FILE != null) {
+                    try {
+                        Files.writeString(
+                            OUTPUT_FILE,
+                            snapshot + System.lineSeparator(),
+                            StandardCharsets.UTF_8,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE
+                        );
+                    } catch (final IOException | RuntimeException ignored) {
+                    }
+                }
             }
         } catch (final RuntimeException ignored) {
         }
