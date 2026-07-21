@@ -30,7 +30,7 @@ diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Conne
 +        })));
 +        // MobOpt end - consolidate only PLAY-state outside-read flushes
      }
-@@ -349,3 +356,29 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -349,3 +356,30 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
 +    // MobOpt start - consolidate only PLAY-state outside-read flushes
 +    private void updateFlushConsolidation(final ChannelHandlerContext ctx, final ConnectionProtocol protocol) {
 +        final io.papermc.paper.configuration.GlobalConfiguration configuration =
@@ -43,16 +43,17 @@ diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Conne
 +        }
 +
 +        final ChannelPipeline pipeline = ctx.pipeline();
-+        if (pipeline.get(FLUSH_CONSOLIDATION_HANDLER) != null) {
-+            pipeline.replace(
-+                FLUSH_CONSOLIDATION_HANDLER,
-+                FLUSH_CONSOLIDATION_HANDLER,
-+                new io.netty.handler.flush.FlushConsolidationHandler(
-+                    io.netty.handler.flush.FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES,
-+                    next
-+                )
-+            );
++        if (pipeline.get(FLUSH_CONSOLIDATION_HANDLER) == null) {
++            return;
 +        }
++        pipeline.replace(
++            FLUSH_CONSOLIDATION_HANDLER,
++            FLUSH_CONSOLIDATION_HANDLER,
++            new io.netty.handler.flush.FlushConsolidationHandler(
++                io.netty.handler.flush.FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES,
++                next
++            )
++        );
 +        this.consolidateFlushesOutsideRead = next;
 +    }
 +    // MobOpt end - consolidate only PLAY-state outside-read flushes

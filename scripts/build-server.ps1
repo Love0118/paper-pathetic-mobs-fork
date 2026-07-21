@@ -40,17 +40,34 @@ if (-not $javaHome) {
 $env:JAVA_HOME = $javaHome
 $env:Path = (Join-Path $javaHome 'bin') + ';' + $env:Path
 
+function Get-SourceState {
+    $statusLines = @(& git status --porcelain --untracked-files=normal)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git worktree.' }
+    $commit = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source commit.' }
+    $branch = (& git branch --show-current).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source branch.' }
+    return [pscustomobject]@{
+        Status = $statusLines -join "`n"
+        Commit = $commit
+        Branch = $branch
+    }
+}
+
+function Assert-SourceState([object]$Expected, [object]$Actual) {
+    if ($Actual.Commit -ne $Expected.Commit -or
+        $Actual.Branch -ne $Expected.Branch -or
+        $Actual.Status -ne $Expected.Status) {
+        throw 'The source revision or worktree changed during the build. Discard this artifact and rebuild from a stable worktree.'
+    }
+}
+
 Push-Location $root
 try {
-    $gitStatus = & git status --porcelain --untracked-files=normal
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git worktree.' }
-    if ($gitStatus -and -not $AllowDirty) {
+    $sourceState = Get-SourceState
+    if ($sourceState.Status -and -not $AllowDirty) {
         throw 'The Git worktree is dirty. Commit the release revision first, or use -AllowDirty for a development build.'
     }
-    $sourceCommit = (& git rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source commit.' }
-    $sourceBranch = (& git branch --show-current).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source branch.' }
 
     if ($Clean) {
         & .\gradlew.bat --no-daemon clean
@@ -60,15 +77,15 @@ try {
     & .\gradlew.bat --no-daemon applyPatches --console=plain
     if ($LASTEXITCODE -ne 0) { throw "Patch application failed with exit code $LASTEXITCODE" }
 
-    & .\gradlew.bat --no-daemon build createMojmapPaperclipJar --console=plain
+    & .\gradlew.bat --no-daemon build createPaperclipJar --console=plain
     if ($LASTEXITCODE -ne 0) { throw "Server build failed with exit code $LASTEXITCODE" }
+    Assert-SourceState $sourceState (Get-SourceState)
 
-    $builtJar = Get-ChildItem -LiteralPath (Join-Path $root 'paper-server\build\libs') -File -Filter 'paper-paperclip-26.1.2*-mojmap.jar' |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1 -ExpandProperty FullName
-    if (-not $builtJar) {
-        throw 'Expected Paper 26.1.2 Paperclip JAR was not created.'
+    $builtJars = @(Get-ChildItem -LiteralPath (Join-Path $root 'paper-server\build\libs') -File -Filter 'paper-paperclip-26.1.2*.jar')
+    if ($builtJars.Count -ne 1) {
+        throw "Expected exactly one Paper 26.1.2 Paperclip JAR, found $($builtJars.Count)."
     }
+    $builtJar = $builtJars[0].FullName
 
     $dist = Join-Path $root 'dist'
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
@@ -96,12 +113,13 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'scripts\start-server.ps1'), (Join-Path $root 'scripts\start-server.cmd') -Destination $releaseScripts
     Copy-Item -LiteralPath (Join-Path $root 'README.md'), (Join-Path $root 'MOBOPT.md'), (Join-Path $root 'THIRD_PARTY_NOTICES.md'), (Join-Path $root 'LICENSE.md') -Destination $releaseStage
     Copy-Item -LiteralPath (Join-Path $root 'licenses\GPL.md'), (Join-Path $root 'licenses\MIT.md'), (Join-Path $root 'licenses\PATHETIC-MIT.txt'), (Join-Path $root 'licenses\PATHETIC-MOBS-CC0-1.0.txt') -Destination $releaseLicenses
+    Assert-SourceState $sourceState (Get-SourceState)
     Set-Content -LiteralPath (Join-Path $releaseStage 'BUILD_INFO.txt') -Encoding ascii -Value @(
         'Product: MobOpt Paper 26.1.2',
-        "Source-Branch: $sourceBranch",
-        "Source-Commit: $sourceCommit",
+        "Source-Branch: $($sourceState.Branch)",
+        "Source-Commit: $($sourceState.Commit)",
         'Paper-Base: e4e17fc90d31c3dca6de8bebc87c741749f8f3df',
-        "Dirty-Development-Build: $([bool]$gitStatus)"
+        "Dirty-Development-Build: $([bool]$sourceState.Status)"
     )
 
     $releaseZip = Join-Path $dist 'mobopt-paper-26.1.2-release.zip'

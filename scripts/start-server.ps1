@@ -9,6 +9,8 @@ param(
 
     [switch]$AcceptEula,
 
+    [switch]$SkipHashCheck,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArguments
 )
@@ -32,7 +34,12 @@ if (-not (Test-Path -LiteralPath $JarPath)) {
 }
 
 $hashPath = "$JarPath.sha256"
-if (Test-Path -LiteralPath $hashPath) {
+if ($SkipHashCheck) {
+    Write-Warning "Skipping server JAR SHA-256 verification by explicit request: $JarPath"
+} else {
+    if (-not (Test-Path -LiteralPath $hashPath)) {
+        throw "Server JAR SHA-256 file not found: $hashPath. Restore it or explicitly use -SkipHashCheck for a custom development JAR."
+    }
     $hashLine = Get-Content -LiteralPath $hashPath | Select-Object -First 1
     if ($hashLine -notmatch '^\s*([0-9a-fA-F]{64})\s+') {
         throw "Invalid SHA-256 file: $hashPath"

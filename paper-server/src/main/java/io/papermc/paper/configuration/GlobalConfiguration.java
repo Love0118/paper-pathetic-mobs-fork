@@ -122,7 +122,7 @@ public class GlobalConfiguration extends ConfigurationPart {
         public class PlayProtocolFlushConsolidation extends ConfigurationPart {
             @Comment(
                 "Consolidates PLAY-state flushes outside inbound reads until the end of the current Netty event-loop turn while preserving packet order and completion listeners. " +
-                "HANDSHAKING, STATUS, LOGIN, and CONFIGURATION retain Paper's immediate flush behavior."
+                "HANDSHAKING, STATUS, LOGIN, and CONFIGURATION retain Paper's immediate flush behavior. A full server restart is required."
             )
             public boolean enabled = true;
         }

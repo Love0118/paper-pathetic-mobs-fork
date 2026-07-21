@@ -42,7 +42,7 @@ public final class PatheticMobPathfinding {
     );
     private static final INeighborStrategy HORIZONTAL_CARDINAL = () -> HORIZONTAL_CARDINAL_OFFSETS;
     private static final int MAX_FAST_DETOUR_OFFSET = 8;
-    private static final int MAX_PATHETIC_ITERATIONS = 100_000;
+    private static final int MAX_PATHETIC_WORK_UNITS = 100_000;
 
     private PatheticMobPathfinding() {
     }
@@ -69,15 +69,10 @@ public final class PatheticMobPathfinding {
             return null;
         }
 
-        final double iterationBudget = (double) maxVisitedNodes * (double) searchDepthMultiplier;
-        if (Double.isNaN(iterationBudget) || iterationBudget < 1.0D) {
-            return null;
-        }
-
         final BlockPos target = targets.iterator().next();
 
         final int maxPathLength = Math.max(1, (int) Math.ceil(maxRange));
-        final int evaluationBudget = (int) Math.min(MAX_PATHETIC_ITERATIONS, Math.floor(iterationBudget) - 1.0D);
+        final int evaluationBudget = patheticEvaluationBudget(maxVisitedNodes, searchDepthMultiplier);
         if (evaluationBudget < 1) {
             return null;
         }
@@ -115,7 +110,19 @@ public final class PatheticMobPathfinding {
         }
 
         final BlockPos target = targets.iterator().next();
-        return start.y == target.getY() && start.distanceTo(target) < maxRange + accuracy;
+        return start.y == target.getY()
+            && manhattanDistance(start, target) > accuracy
+            && start.distanceTo(target) < maxRange + accuracy;
+    }
+
+    static int patheticEvaluationBudget(final int maxVisitedNodes, final float searchDepthMultiplier) {
+        final float vanillaBudget = maxVisitedNodes * searchDepthMultiplier;
+        if (!Float.isFinite(vanillaBudget) || vanillaBudget < 3.0F) {
+            return 0;
+        }
+
+        final int vanillaExpansionBudget = Math.max(0, (int) vanillaBudget - 1);
+        return Math.min(MAX_PATHETIC_WORK_UNITS / 2, vanillaExpansionBudget / 2);
     }
 
     @Nullable
@@ -158,7 +165,7 @@ public final class PatheticMobPathfinding {
             }
         }
 
-        int remainingAStarIterations = Math.min(MAX_PATHETIC_ITERATIONS, context.evaluationBudget().remaining());
+        int remainingAStarIterations = context.evaluationBudget().remaining();
         for (int index = 0; index < endpoints.size() && remainingAStarIterations > 0; index++) {
             final BlockPos endpoint = endpoints.get(index);
             final PatheticNavigationPoint endpointPoint = provider.pointAt(

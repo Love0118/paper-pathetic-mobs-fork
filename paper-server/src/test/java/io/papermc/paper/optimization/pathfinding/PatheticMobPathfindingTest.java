@@ -42,6 +42,23 @@ class PatheticMobPathfindingTest {
     }
 
     @Test
+    void accuracyOneRequestsAlreadyAtTheGoalUseVanillaSemantics() {
+        final Node start = walkableNode(0, 64, 0);
+        final Set<BlockPos> adjacentTarget = Set.of(new BlockPos(1, 64, 0));
+
+        assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, adjacentTarget, 5.0F, 0));
+        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, adjacentTarget, 5.0F, 1));
+    }
+
+    @Test
+    void patheticWorkSharesVanillasFloatExpansionBudget() {
+        assertEquals(49, PatheticMobPathfinding.patheticEvaluationBudget(100, 1.0F));
+        assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(2, 1.0F));
+        assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(100, Float.NaN));
+        assertEquals(50_000, PatheticMobPathfinding.patheticEvaluationBudget(Integer.MAX_VALUE, 1.0F));
+    }
+
+    @Test
     void onlyTransitionFreeFlatPathTypesAreSupported() {
         final Set<PathType> supported = EnumSet.noneOf(PathType.class);
         for (final PathType pathType : PathType.values()) {

@@ -39,7 +39,7 @@ optimizations:
 
 ### PLAY protocol flush consolidation
 
-Paper는 이미 메인 서버 tick에서 생성된 플레이어 패킷을 묶습니다. 이 포크는 그 동작을 중복 구현하지 않고, `PLAY` 프로토콜에서 inbound read 바깥에 발생한 연속 flush를 현재 Netty event-loop 회전이 끝날 때 한 번으로 통합합니다.
+Paper는 이미 메인 서버 tick에서 생성된 플레이어 패킷을 묶습니다. 이 포크는 그 동작을 중복 구현하지 않고, `PLAY` 프로토콜에서 inbound read 바깥에 발생한 연속 flush를 현재 Netty event-loop 회전이 끝날 때 통합합니다. Netty의 안전 상한에 따라 대기 flush가 256회에 도달하면 회전 종료 전이라도 즉시 flush합니다.
 
 - `HANDSHAKING`, `STATUS`, `LOGIN`, `CONFIGURATION`은 Paper의 즉시 flush 동작을 유지합니다.
 - 로그인 압축 경계와 프로토콜 전환을 건드리지 않습니다.
@@ -89,6 +89,7 @@ scripts\start-server.cmd -MemoryGb 6
 ```
 
 기본 서버 디렉터리는 `run/`이며, 플러그인은 `run/plugins/`에 넣습니다.
+기본 배포 JAR은 `.sha256` sidecar가 반드시 있어야 합니다. 별도 개발 JAR을 의도적으로 무검증 실행할 때만 `-JarPath <path> -SkipHashCheck`를 함께 사용하십시오.
 
 ## 검증 기준
 
@@ -98,7 +99,7 @@ scripts\start-server.cmd -MemoryGb 6
 $env:JAVA_HOME = 'C:\path\to\jdk-25'
 .\gradlew.bat --no-daemon applyPatches
 .\gradlew.bat --no-daemon build
-.\gradlew.bat --no-daemon createMojmapPaperclipJar
+.\gradlew.bat --no-daemon createPaperclipJar
 ```
 
 그 뒤 새 서버 디렉터리에서 부팅하여 다음을 확인합니다.
