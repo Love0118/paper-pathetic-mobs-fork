@@ -7,6 +7,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+if ($null -ne [System.Environment]::GetEnvironmentVariable('BUILD_NUMBER')) {
+    throw 'BUILD_NUMBER must be unset when using this release script; it only packages the verified local-SNAPSHOT artifact.'
+}
 $javaHomeCandidates = @($env:JAVA_HOME, 'C:\Program Files\Java\jdk-25')
 $javaSearchRoots = @(
     'C:\Program Files\Java',

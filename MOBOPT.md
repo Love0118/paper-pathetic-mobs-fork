@@ -102,6 +102,8 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 .\gradlew.bat --no-daemon createPaperclipJar
 ```
 
+`scripts\build-server.ps1`은 검증된 `local-SNAPSHOT` 산출물만 패키징하며, 오래된 JAR 오인을 막기 위해 `BUILD_NUMBER`가 설정된 CI 환경에서는 실행을 거부합니다. 로컬 릴리스 전에 해당 환경변수를 제거하십시오.
+
 그 뒤 새 서버 디렉터리에서 부팅하여 다음을 확인합니다.
 
 - Paper 26.1.2 정상 부팅
