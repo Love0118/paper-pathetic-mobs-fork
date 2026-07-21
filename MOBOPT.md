@@ -145,6 +145,24 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 
 성능 수치는 실제 서버의 `/spark profiler start --timeout 600` 결과와 동일 workload A/B 비교로 판단해야 합니다.
 
+### 실제 fast-path 진단
+
+테스트 서버에서만 다음 JVM 옵션을 추가하면 종료 시 실제로 실행된 내부 경로를 한 줄로 출력합니다. 기본값은 꺼짐이며, 꺼진 상태에서는 카운터 상태와 종료 훅을 만들지 않습니다.
+
+```text
+-Dpaper.mobopt.verifyFastPaths=true
+-Dpaper.mobopt.verifyFastPaths.runId=enabled-run
+```
+
+정상 종료 로그의 `MOBOPT_FASTPATH_METRICS` 줄은 공백으로 구분된 `key=value` 형식입니다. `run_id`는 공백과 `=`을 `_`로 치환하고 최대 128자로 제한합니다.
+
+- frame 및 compression passthrough: retained/copied 호출 수(`*_count`)와 payload 바이트(`*_bytes`)
+- frame prefix: in-place, 기능 ON이지만 부적격 fallback, 기능 OFF fallback의 호출 수와 body 바이트
+- PLAY write: lazy/normal event-loop task 수
+- explosion: indexed lookup/full scan 횟수, 조회 시점의 전체 월드 플레이어 합계, 후보 합계, 정확한 64블록 검사 뒤 실제 수신자 합계
+
+이 옵션은 경로 실행 여부와 처리량을 증명하는 진단용입니다. 성능 차이는 동일한 월드·플레이어·패킷 workload에서 토글 ON/OFF 실행의 CPU, allocation, tick 지표를 함께 비교하십시오.
+
 ## 라이선스
 
 - Paper 및 이 포크의 서버 패치: 저장소의 GPL 조건

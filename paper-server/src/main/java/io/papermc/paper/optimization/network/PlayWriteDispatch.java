@@ -21,10 +21,12 @@ public final class PlayWriteDispatch {
 
         if (deferWakeup && eventLoop instanceof SingleThreadEventExecutor executor) {
             executor.lazyExecute(task);
+            io.papermc.paper.optimization.MobOptRuntimeMetrics.playWriteDispatch(true);
             return true;
         }
 
         eventLoop.execute(task);
+        io.papermc.paper.optimization.MobOptRuntimeMetrics.playWriteDispatch(false);
         return false;
     }
 }

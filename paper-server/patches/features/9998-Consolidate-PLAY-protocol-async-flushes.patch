@@ -24,7 +24,7 @@ diff --git a/net/minecraft/network/CompressionDecoder.java b/net/minecraft/netwo
 index 6c89480..ea8e3a8 100644
 --- a/net/minecraft/network/CompressionDecoder.java
 +++ b/net/minecraft/network/CompressionDecoder.java
-@@ -16,25 +16,37 @@ public class CompressionDecoder extends ByteToMessageDecoder {
+@@ -16,25 +16,38 @@ public class CompressionDecoder extends ByteToMessageDecoder {
      private Inflater inflater;
      private int threshold;
      private boolean validateDecompressed;
@@ -61,6 +61,7 @@ index 6c89480..ea8e3a8 100644
 -            out.add(in.readBytes(in.readableBytes()));
 +            final int readableBytes = in.readableBytes();
 +            out.add(this.zeroCopyPassthrough ? in.readRetainedSlice(readableBytes) : in.readBytes(readableBytes));
++            io.papermc.paper.optimization.MobOptRuntimeMetrics.compressionPassthrough(this.zeroCopyPassthrough, readableBytes);
          } else {
              if (this.validateDecompressed) {
                  if (uncompressedLength < this.threshold) {
@@ -374,12 +375,13 @@ index a490f5e..4d70054 100644
      }
 
      @Override
-@@ -63,7 +75,7 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+@@ -63,7 +75,8 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
                      this.monitor.onReceive(length + VarInt.getByteSize(length));
                  }
 
 -                out.add(in.readBytes(length));
 +                out.add(this.zeroCopyFrames ? in.readRetainedSlice(length) : in.readBytes(length));
++                io.papermc.paper.optimization.MobOptRuntimeMetrics.frameDecoded(this.zeroCopyFrames, length);
              }
          }
      }
@@ -387,7 +389,7 @@ diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minec
 index 83539ec..2b8e6b3 100644
 --- a/net/minecraft/network/Varint21LengthFieldPrepender.java
 +++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
-@@ -4,22 +4,70 @@ import io.netty.buffer.ByteBuf;
+@@ -4,22 +4,72 @@ import io.netty.buffer.ByteBuf;
  import io.netty.channel.ChannelHandlerContext;
  import io.netty.channel.ChannelHandler.Sharable;
  import io.netty.handler.codec.EncoderException;
@@ -432,6 +434,7 @@ index 83539ec..2b8e6b3 100644
 +            writeVarInt(msg, headerIndex, bodyLength);
 +            msg.readerIndex(headerIndex);
 +            out.add(msg.retain());
++            io.papermc.paper.optimization.MobOptRuntimeMetrics.framePrefixInPlace(bodyLength);
 +            return;
 +        }
 +
@@ -440,6 +443,7 @@ index 83539ec..2b8e6b3 100644
 +            VarInt.write(framed, bodyLength);
 +            framed.writeBytes(msg, msg.readerIndex(), bodyLength);
 +            out.add(framed);
++            io.papermc.paper.optimization.MobOptRuntimeMetrics.framePrefixFallback(this.prependInPlace, bodyLength);
 +        } catch (final RuntimeException | Error throwable) {
 +            framed.release();
 +            throw throwable;
@@ -468,7 +472,7 @@ diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/
 index 0275b37..e3d71ee 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -2007,12 +2007,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -2007,12 +2007,40 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
          // CraftBukkit end
          ParticleOptions explosionParticle = explosion.isSmall() ? smallExplosionParticles : largeExplosionParticles;
 
@@ -479,6 +483,7 @@ index 0275b37..e3d71ee 100644
 +        final boolean optimizeExplosionRecipients = configuration != null
 +            && configuration.optimizations.explosionBroadcastOptimization.enabled;
 +        final Iterable<ServerPlayer> explosionRecipients;
++        final int explosionCandidateCount;
 +        if (optimizeExplosionRecipients) {
 +            final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> nearbyPlayers =
 +                this.moonrise$getNearbyPlayers().getPlayersByBlock(
@@ -487,12 +492,20 @@ index 0275b37..e3d71ee 100644
 +                    ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.GENERAL_SMALL
 +                );
 +            explosionRecipients = nearbyPlayers == null ? java.util.List.of() : nearbyPlayers;
++            explosionCandidateCount = nearbyPlayers == null ? 0 : nearbyPlayers.size();
 +        } else {
 +            explosionRecipients = this.players;
++            explosionCandidateCount = this.players.size();
 +        }
++        io.papermc.paper.optimization.MobOptRuntimeMetrics.explosionLookup(
++            optimizeExplosionRecipients,
++            this.players.size(),
++            explosionCandidateCount
++        );
 +
 +        for (ServerPlayer player : explosionRecipients) {
              if (player.distanceToSqr(center) < 4096.0) {
++                io.papermc.paper.optimization.MobOptRuntimeMetrics.explosionRecipient();
                  Optional<Vec3> playerKnockback = Optional.ofNullable(explosion.getHitPlayers().get(player));
                  player.connection.send(new ClientboundExplodePacket(center, r, blockCount, playerKnockback, explosionParticle, explosionSound, blockParticles));
              }
