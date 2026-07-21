@@ -30,7 +30,7 @@ $javaHomeCandidates = $javaHomeCandidates | Where-Object {
 
 $javaHome = $javaHomeCandidates | Where-Object {
     $version = & (Join-Path $_ 'bin\java.exe') -version 2>&1 | Select-Object -First 1
-    $version -match 'version "25[\.-]'
+    $version -match 'version "25(?:[.\-]|")'
 } | Select-Object -First 1
 
 if (-not $javaHome) {
@@ -81,7 +81,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Server build failed with exit code $LASTEXITCODE" }
     Assert-SourceState $sourceState (Get-SourceState)
 
-    $builtJars = @(Get-ChildItem -LiteralPath (Join-Path $root 'paper-server\build\libs') -File -Filter 'paper-paperclip-26.1.2*.jar')
+    $builtJars = @(Get-ChildItem -LiteralPath (Join-Path $root 'paper-server\build\libs') -File -Filter 'paper-paperclip-*.jar' |
+        Where-Object { $_.Name -match '^paper-paperclip-26\.1\.2(?:-.*)?\.jar$' })
     if ($builtJars.Count -ne 1) {
         throw "Expected exactly one Paper 26.1.2 Paperclip JAR, found $($builtJars.Count)."
     }

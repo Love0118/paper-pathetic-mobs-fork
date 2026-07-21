@@ -72,7 +72,7 @@ $javaHomeCandidates = $javaHomeCandidates | Where-Object {
 
 $javaHome = $javaHomeCandidates | Where-Object {
     $version = & (Join-Path $_ 'bin\java.exe') -version 2>&1 | Select-Object -First 1
-    $version -match 'version "25[\.-]'
+    $version -match 'version "25(?:[.\-]|")'
 } | Select-Object -First 1
 
 if (-not $javaHome) {
