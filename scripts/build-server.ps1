@@ -81,12 +81,31 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Server build failed with exit code $LASTEXITCODE" }
     Assert-SourceState $sourceState (Get-SourceState)
 
-    $builtJars = @(Get-ChildItem -LiteralPath (Join-Path $root 'paper-server\build\libs') -File -Filter 'paper-paperclip-*.jar' |
-        Where-Object { $_.Name -match '^paper-paperclip-26\.1\.2(?:-.*)?\.jar$' })
-    if ($builtJars.Count -ne 1) {
-        throw "Expected exactly one Paper 26.1.2 Paperclip JAR, found $($builtJars.Count)."
+    $builtJar = Join-Path $root 'paper-server\build\libs\paper-paperclip-26.1.2.local-SNAPSHOT.jar'
+    if (-not (Test-Path -LiteralPath $builtJar -PathType Leaf)) {
+        throw "Expected Paper 26.1.2 Paperclip JAR was not produced: $builtJar"
     }
-    $builtJar = $builtJars[0].FullName
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $paperclipArchive = [System.IO.Compression.ZipFile]::OpenRead($builtJar)
+    try {
+        $manifestEntry = $paperclipArchive.GetEntry('META-INF/MANIFEST.MF')
+        $patheticEntry = $paperclipArchive.GetEntry('META-INF/libraries/de/bsommerfeld/pathetic/engine/5.4.6/engine-5.4.6.jar')
+        if ($null -eq $manifestEntry -or $null -eq $patheticEntry) {
+            throw 'The generated JAR is missing the Paperclip manifest or embedded Pathetic engine.'
+        }
+        $manifestReader = [System.IO.StreamReader]::new($manifestEntry.Open())
+        try {
+            $manifest = $manifestReader.ReadToEnd()
+        } finally {
+            $manifestReader.Dispose()
+        }
+        if ($manifest -notmatch '(?m)^Main-Class:\s*io\.papermc\.paperclip\.Main\s*$') {
+            throw 'The generated JAR is not an executable Paperclip artifact.'
+        }
+    } finally {
+        $paperclipArchive.Dispose()
+    }
 
     $dist = Join-Path $root 'dist'
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
