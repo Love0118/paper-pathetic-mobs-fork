@@ -1,6 +1,7 @@
 package io.papermc.paper.optimization.network;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import java.util.Arrays;
@@ -51,6 +52,35 @@ class NetworkFramePrefixTest {
         assertArrayEquals(new byte[] {4, 5, 6}, payload);
 
         framed.release();
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void singleComponentCompositeWithRetainedObserverUsesCopyFallback() {
+        final byte[] prefix = {91, 92, 93};
+        final byte[] payload = {4, 5, 6};
+        final ByteBuf component = Unpooled.buffer(prefix.length + payload.length);
+        component.writeBytes(prefix);
+        component.writeBytes(payload);
+        final ByteBuf observer = component.retainedDuplicate();
+        final CompositeByteBuf body = Unpooled.compositeBuffer(1);
+        body.addComponent(true, component);
+        body.readerIndex(prefix.length);
+        final EmbeddedChannel channel = new EmbeddedChannel(new Varint21LengthFieldPrepender(true));
+
+        assertTrue(channel.writeOutbound(body));
+        final ByteBuf framed = channel.readOutbound();
+        assertNotSame(body, framed);
+        final byte[] observedPrefix = new byte[prefix.length];
+        observer.getBytes(0, observedPrefix);
+        assertArrayEquals(prefix, observedPrefix);
+        assertEquals(payload.length, VarInt.read(framed));
+        final byte[] decodedPayload = new byte[payload.length];
+        framed.readBytes(decodedPayload);
+        assertArrayEquals(payload, decodedPayload);
+
+        framed.release();
+        observer.release();
         channel.finishAndReleaseAll();
     }
 

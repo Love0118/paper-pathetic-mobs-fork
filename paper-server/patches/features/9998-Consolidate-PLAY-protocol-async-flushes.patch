@@ -387,7 +387,7 @@ diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minec
 index 83539ec..2b8e6b3 100644
 --- a/net/minecraft/network/Varint21LengthFieldPrepender.java
 +++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
-@@ -4,22 +4,69 @@ import io.netty.buffer.ByteBuf;
+@@ -4,22 +4,70 @@ import io.netty.buffer.ByteBuf;
  import io.netty.channel.ChannelHandlerContext;
  import io.netty.channel.ChannelHandler.Sharable;
  import io.netty.handler.codec.EncoderException;
@@ -451,6 +451,7 @@ index 83539ec..2b8e6b3 100644
 +            && msg.readerIndex() >= MAX_VARINT21_BYTES
 +            && msg.refCnt() == 1
 +            && msg.unwrap() == null
++            && !(msg instanceof io.netty.buffer.CompositeByteBuf)
 +            && msg.nioBufferCount() == 1
 +            && !msg.isReadOnly();
 +    }
