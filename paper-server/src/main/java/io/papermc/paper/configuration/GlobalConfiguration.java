@@ -104,6 +104,30 @@ public class GlobalConfiguration extends ConfigurationPart {
         public boolean enableImmediately = false;
     }
 
+    public Optimizations optimizations;
+
+    public class Optimizations extends ConfigurationPart {
+        public PatheticMobPathfinding patheticMobPathfinding;
+
+        public class PatheticMobPathfinding extends ConfigurationPart {
+            @Comment(
+                "Replaces safe flat, single-target accuracy 0/1 searches from the vanilla WalkNodeEvaluator with the Pathetic pathfinder. " +
+                "Unsupported requests and unsuccessful Pathetic searches retain the original mod's vanilla fallback."
+            )
+            public boolean enabled = true;
+        }
+
+        public PlayProtocolFlushConsolidation playProtocolFlushConsolidation;
+
+        public class PlayProtocolFlushConsolidation extends ConfigurationPart {
+            @Comment(
+                "Consolidates PLAY-state flushes outside inbound reads until the end of the current Netty event-loop turn while preserving packet order and completion listeners. " +
+                "HANDSHAKING, STATUS, LOGIN, and CONFIGURATION retain Paper's immediate flush behavior."
+            )
+            public boolean enabled = true;
+        }
+    }
+
     public Proxies proxies;
 
     public class Proxies extends ConfigurationPart {

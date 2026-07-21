@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MobOpt Paper <mobopt@localhost>
+Date: Tue, 22 Jul 2026 01:20:00 +0900
+Subject: [PATCH] Consolidate PLAY protocol outside-read flushes
+
+Paper already suspends automatic player flushes around the main tick. Extend
+Netty flush consolidation only after the outbound protocol reaches PLAY so
+flushes outside inbound reads share one event-loop flush. LOGIN, STATUS,
+HANDSHAKING, and CONFIGURATION retain the upstream immediate behavior,
+preserving compression and protocol boundaries.
+
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -64,2 +64,3 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private static final ProtocolInfo<ServerHandshakePacketListener> INITIAL_PROTOCOL = HandshakeProtocols.SERVERBOUND;
++    public static final String FLUSH_CONSOLIDATION_HANDLER = "mobopt-flush-consolidation"; // MobOpt - named PLAY-aware flush consolidation handler
+     private final PacketFlow receiving;
+@@ -85,2 +86,3 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private boolean handlingFault;
++    private boolean consolidateFlushesOutsideRead; // MobOpt - consolidate PLAY-state outside-read flushes
+     private volatile @Nullable DisconnectionDetails delayedDisconnect;
+@@ -345,3 +347,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         boolean isLoginProtocol = protocol.id() == ConnectionProtocol.LOGIN;
+-        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> this.sendLoginDisconnect = isLoginProtocol)));
++        // MobOpt start - consolidate only PLAY-state outside-read flushes
++        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> {
++            this.sendLoginDisconnect = isLoginProtocol;
++            this.updateFlushConsolidation(ctx, protocol.id());
++        })));
++        // MobOpt end - consolidate only PLAY-state outside-read flushes
+     }
+@@ -349,3 +356,29 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
++    // MobOpt start - consolidate only PLAY-state outside-read flushes
++    private void updateFlushConsolidation(final ChannelHandlerContext ctx, final ConnectionProtocol protocol) {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        final boolean next = configuration != null
++            && configuration.optimizations.playProtocolFlushConsolidation.enabled
++            && protocol == ConnectionProtocol.PLAY;
++        if (next == this.consolidateFlushesOutsideRead) {
++            return;
++        }
++
++        final ChannelPipeline pipeline = ctx.pipeline();
++        if (pipeline.get(FLUSH_CONSOLIDATION_HANDLER) != null) {
++            pipeline.replace(
++                FLUSH_CONSOLIDATION_HANDLER,
++                FLUSH_CONSOLIDATION_HANDLER,
++                new io.netty.handler.flush.FlushConsolidationHandler(
++                    io.netty.handler.flush.FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES,
++                    next
++                )
++            );
++        }
++        this.consolidateFlushesOutsideRead = next;
++    }
++    // MobOpt end - consolidate only PLAY-state outside-read flushes
++
+     public void setListenerForServerboundHandshake(final PacketListener packetListener) {
+         if (this.packetListener != null) {
+             throw new IllegalStateException("Listener already set");
+diff --git a/net/minecraft/server/network/ServerConnectionListener.java b/net/minecraft/server/network/ServerConnectionListener.java
+--- a/net/minecraft/server/network/ServerConnectionListener.java
++++ b/net/minecraft/server/network/ServerConnectionListener.java
+@@ -96,4 +96,4 @@ public class ServerConnectionListener {
+-                                    if (!disableFlushConsolidation) channel.pipeline().addFirst(new io.netty.handler.flush.FlushConsolidationHandler()); // Paper - Optimize network
++                                    if (!disableFlushConsolidation) channel.pipeline().addFirst(Connection.FLUSH_CONSOLIDATION_HANDLER, new io.netty.handler.flush.FlushConsolidationHandler()); // Paper - Optimize network; MobOpt - named for PLAY-aware replacement
+                                     ChannelPipeline pipeline = channel.pipeline().addLast(HandlerNames.TIMEOUT, new ReadTimeoutHandler(30));
+                                     if (ServerConnectionListener.this.server.repliesToStatus()) {
+                                         pipeline.addLast(HandlerNames.LEGACY_QUERY, new LegacyQueryHandler(ServerConnectionListener.this.getServer()));
+--
+2.52.0.windows.1

@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MobOpt Paper <mobopt@localhost>
+Date: Tue, 22 Jul 2026 01:15:00 +0900
+Subject: [PATCH] Use Pathetic for eligible ground mob paths
+
+Keep the Paper API untouched and intercept only safe single-target vanilla
+WalkNodeEvaluator accuracy 0/1 requests supported by Pathetic Mobs. The
+evaluator remains prepared for either implementation, and a null result retains
+the upstream mod's vanilla fallback contract. Debug-capture searches stay on
+Paper because optimized paths do not contain vanilla A* debug heap data.
+
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -58,3 +58,30 @@ public class PathFinder {
++        // MobOpt start - Pathetic ground-mob pathfinding
++        if (!this.captureDebug.getAsBoolean()) {
++            Path optimizedPath;
++            try {
++                optimizedPath = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
++                    this.nodeEvaluator,
++                    this.nodeEvaluator.currentContext,
++                    level,
++                    entity,
++                    from,
++                    targets,
++                    maxPathLength,
++                    reachRange,
++                    this.maxVisitedNodes,
++                    maxVisitedNodesMultiplier
++                );
++            } catch (RuntimeException | Error throwable) {
++                this.nodeEvaluator.done();
++                throw throwable;
++            }
++            if (optimizedPath != null) {
++                this.nodeEvaluator.done();
++                return optimizedPath;
++            }
++        }
++        // MobOpt end - Pathetic ground-mob pathfinding
++
+         // Paper start - Perf: remove streams and optimize collection
+         List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayList();
+         for (BlockPos pos : targets) {
+--
+2.52.0.windows.1

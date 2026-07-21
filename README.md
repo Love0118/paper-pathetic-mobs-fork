@@ -1,3 +1,19 @@
+# MobOpt Paper 26.1.2 Fork
+
+This repository is a Paper 26.1.2-compatible server fork with toggle-controlled,
+server-internal mob pathfinding and networking optimizations. The public
+`paper-api` module is unchanged. See [MOBOPT.md](MOBOPT.md) for build, launch,
+configuration, compatibility, and fallback details.
+
+Build the distributable server with `scripts\build-server.ps1`, then launch it
+with `scripts\start-server.ps1`. This is an independent fork and is not an
+official PaperMC, Mojang, or Microsoft product; fork-specific issues belong in
+this repository rather than PaperMC support channels.
+
+---
+
+## Upstream Paper documentation
+
 Paper [![Version](https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Fartifactory.papermc.io%2Fartifactory%2Funiverse%2Fio%2Fpapermc%2Fpaper%2Fpaper-api%2Fmaven-metadata.xml&strategy=highestVersion&filter=26.1*&label=version&color=%23344ceb
 )](https://papermc.io/downloads/paper)
 [![Paper Build Status](https://img.shields.io/github/actions/workflow/status/PaperMC/Paper/build.yml?branch=main)](https://github.com/PaperMC/Paper/actions)
@@ -66,9 +82,10 @@ java {
 
 How To (Compiling Jar From Source)
 ------
-To compile Paper, you need JDK 25 and an internet connection.
+To compile this fork, you need JDK 25, PowerShell 7, and an internet connection.
 
-Clone this repo, run `./gradlew applyPatches`, then `./gradlew createPaperclipJar` from your terminal. You can find the compiled jar in the `paper-server/build/libs` directory.
+Run `scripts\build-server.ps1`. The distributable Paperclip JAR, checksums,
+and release ZIP are written to `dist/`.
 
 To get a full list of tasks, run `./gradlew tasks`.
 
