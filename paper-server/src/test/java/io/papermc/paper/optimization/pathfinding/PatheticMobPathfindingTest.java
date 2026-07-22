@@ -51,11 +51,11 @@ class PatheticMobPathfindingTest {
     }
 
     @Test
-    void patheticWorkSharesVanillasFloatExpansionBudget() {
-        assertEquals(49, PatheticMobPathfinding.patheticEvaluationBudget(100, 1.0F));
+    void patheticWorkUsesVanillasWorldEvaluationBudget() {
+        assertEquals(99, PatheticMobPathfinding.patheticEvaluationBudget(100, 1.0F));
         assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(2, 1.0F));
         assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(100, Float.NaN));
-        assertEquals(50_000, PatheticMobPathfinding.patheticEvaluationBudget(Integer.MAX_VALUE, 1.0F));
+        assertEquals(100_000, PatheticMobPathfinding.patheticEvaluationBudget(Integer.MAX_VALUE, 1.0F));
     }
 
     @Test
@@ -106,8 +106,10 @@ class PatheticMobPathfindingTest {
 
         assertTrue(budget.tryConsume());
         assertEquals(0, budget.remaining());
+        assertEquals(1, budget.consumed());
         assertFalse(budget.exhausted());
         assertFalse(budget.tryConsume());
+        assertEquals(1, budget.consumed());
         assertTrue(budget.exhausted());
     }
 

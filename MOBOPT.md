@@ -157,6 +157,8 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 
 정상 종료 로그의 `MOBOPT_FASTPATH_METRICS` 줄은 공백으로 구분된 `key=value` 형식입니다. `outputFile`을 지정하면 콘솔과 동일한 한 줄을 해당 파일에도 덮어써서, 콘솔 스트림이 먼저 닫히는 환경에서도 결과를 회수할 수 있습니다. 경로가 잘못됐거나 기록이 거부돼도 서버 종료에는 영향을 주지 않습니다. `run_id`는 공백과 `=`을 `_`로 치환하고 최대 128자로 제한합니다.
 
+경로탐색 검증 필드는 최적화 경로를 실제로 시도한 요청 수(`pathfinding_attempts`), direct/detour/A* 성공 수, 바닐라 fallback 수, 예산 소진 수, provider가 실제 평가한 좌표 수를 포함합니다. 이 카운터는 위 JVM 검증 속성을 켠 실행에서만 생성됩니다.
+
 - frame 및 compression passthrough: retained/copied 호출 수(`*_count`)와 payload 바이트(`*_bytes`)
 - frame prefix: in-place, 기능 ON이지만 부적격 fallback, 기능 OFF fallback의 호출 수와 body 바이트
 - write dispatch: selector wakeup을 미루는 lazy task와 `PlayWriteDispatch`를 통과한 모든 normal task 수. normal에는 비-PLAY 프로토콜 dispatch도 포함됩니다.

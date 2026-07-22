@@ -8,6 +8,7 @@ import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import de.bsommerfeld.pathetic.api.wrapper.PathVector;
 import de.bsommerfeld.pathetic.engine.factory.AStarPathfinderFactory;
 import io.papermc.paper.configuration.GlobalConfiguration;
+import io.papermc.paper.optimization.MobOptRuntimeMetrics;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -76,6 +77,7 @@ public final class PatheticMobPathfinding {
         if (evaluationBudget < 1) {
             return null;
         }
+        MobOptRuntimeMetrics.pathfindingAttempt();
         return findGroundPath(
             region,
             mob,
@@ -122,7 +124,12 @@ public final class PatheticMobPathfinding {
         }
 
         final int vanillaExpansionBudget = Math.max(0, (int) vanillaBudget - 1);
-        return Math.min(MAX_PATHETIC_WORK_UNITS / 2, vanillaExpansionBudget / 2);
+        // A Pathetic work unit is one previously unseen world position, while one
+        // vanilla expansion can inspect several neighbours. Halving both sides
+        // starves the A* phase after the direct/dogleg probes and can force the
+        // complete vanilla search to run afterward. Keep the same outer vanilla
+        // expansion ceiling, capped against hostile multipliers.
+        return Math.min(MAX_PATHETIC_WORK_UNITS, vanillaExpansionBudget);
     }
 
     @Nullable
@@ -146,9 +153,11 @@ public final class PatheticMobPathfinding {
         for (final BlockPos endpoint : endpoints) {
             final Path directPath = findDirectGroundPath(provider, context, start, endpoint, target, maxRange);
             if (directPath != null) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.DIRECT, context);
                 return directPath;
             }
             if (context.evaluationBudget().exhausted()) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
                 return null;
             }
         }
@@ -158,9 +167,11 @@ public final class PatheticMobPathfinding {
                 provider, context, start, endpoint, target, maxRange, maxPathLength
             );
             if (detourPath != null) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.DETOUR, context);
                 return detourPath;
             }
             if (context.evaluationBudget().exhausted()) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
                 return null;
             }
         }
@@ -173,6 +184,7 @@ public final class PatheticMobPathfinding {
             );
             if (!endpointPoint.isTraversable()) {
                 if (context.evaluationBudget().exhausted()) {
+                    recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
                     return null;
                 }
                 continue;
@@ -192,14 +204,28 @@ public final class PatheticMobPathfinding {
                 iterationShare
             );
             if (path != null) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.ASTAR, context);
                 return path;
             }
             if (context.evaluationBudget().exhausted()) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
                 return null;
             }
             remainingAStarIterations -= iterationShare;
         }
+        recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
         return null;
+    }
+
+    private static void recordResult(
+        final MobOptRuntimeMetrics.PathfindingResult result,
+        final PatheticEnvironmentContext context
+    ) {
+        MobOptRuntimeMetrics.pathfindingResult(
+            result,
+            context.evaluationBudget().consumed(),
+            context.evaluationBudget().exhausted()
+        );
     }
 
     @Nullable

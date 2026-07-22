@@ -1,10 +1,12 @@
 package io.papermc.paper.optimization.pathfinding;
 
 final class PatheticEvaluationBudget {
+    private final int initial;
     private int remaining;
     private boolean exhausted;
 
     PatheticEvaluationBudget(final int remaining) {
+        this.initial = remaining;
         this.remaining = remaining;
     }
 
@@ -19,6 +21,10 @@ final class PatheticEvaluationBudget {
 
     int remaining() {
         return this.remaining;
+    }
+
+    int consumed() {
+        return this.initial - this.remaining;
     }
 
     boolean exhausted() {

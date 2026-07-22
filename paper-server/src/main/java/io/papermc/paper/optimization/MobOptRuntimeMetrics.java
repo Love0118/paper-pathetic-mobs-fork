@@ -23,6 +23,13 @@ public final class MobOptRuntimeMetrics {
     private MobOptRuntimeMetrics() {
     }
 
+    public enum PathfindingResult {
+        DIRECT,
+        DETOUR,
+        ASTAR,
+        FALLBACK
+    }
+
     public static void frameDecoded(final boolean retained, final int bytes) {
         final State state = STATE;
         if (state == null) {
@@ -98,6 +105,41 @@ public final class MobOptRuntimeMetrics {
         }
         try {
             state.explosionDistancePassed.increment();
+        } catch (final RuntimeException ignored) {
+        }
+    }
+
+    public static void pathfindingAttempt() {
+        final State state = STATE;
+        if (state == null) {
+            return;
+        }
+        try {
+            state.pathfindingAttempts.increment();
+        } catch (final RuntimeException ignored) {
+        }
+    }
+
+    public static void pathfindingResult(
+        final PathfindingResult result,
+        final int providerEvaluations,
+        final boolean budgetExhausted
+    ) {
+        final State state = STATE;
+        if (state == null) {
+            return;
+        }
+        try {
+            switch (result) {
+                case DIRECT -> state.pathfindingDirect.increment();
+                case DETOUR -> state.pathfindingDetour.increment();
+                case ASTAR -> state.pathfindingAStar.increment();
+                case FALLBACK -> state.pathfindingFallback.increment();
+            }
+            state.pathfindingProviderEvaluations.add(providerEvaluations);
+            if (budgetExhausted) {
+                state.pathfindingBudgetExhausted.increment();
+            }
         } catch (final RuntimeException ignored) {
         }
     }
@@ -185,7 +227,14 @@ public final class MobOptRuntimeMetrics {
             + " explosion_full_scans=" + state.explosionFullScans.sum()
             + " explosion_world_players=" + state.explosionWorldPlayers.sum()
             + " explosion_candidates=" + state.explosionCandidates.sum()
-            + " explosion_distance_passed=" + state.explosionDistancePassed.sum();
+            + " explosion_distance_passed=" + state.explosionDistancePassed.sum()
+            + " pathfinding_attempts=" + state.pathfindingAttempts.sum()
+            + " pathfinding_direct=" + state.pathfindingDirect.sum()
+            + " pathfinding_detour=" + state.pathfindingDetour.sum()
+            + " pathfinding_astar=" + state.pathfindingAStar.sum()
+            + " pathfinding_fallback=" + state.pathfindingFallback.sum()
+            + " pathfinding_budget_exhausted=" + state.pathfindingBudgetExhausted.sum()
+            + " pathfinding_provider_evaluations=" + state.pathfindingProviderEvaluations.sum();
     }
 
     private static String sanitizeRunId(final String runId) {
@@ -230,5 +279,12 @@ public final class MobOptRuntimeMetrics {
         private final LongAdder explosionWorldPlayers = new LongAdder();
         private final LongAdder explosionCandidates = new LongAdder();
         private final LongAdder explosionDistancePassed = new LongAdder();
+        private final LongAdder pathfindingAttempts = new LongAdder();
+        private final LongAdder pathfindingDirect = new LongAdder();
+        private final LongAdder pathfindingDetour = new LongAdder();
+        private final LongAdder pathfindingAStar = new LongAdder();
+        private final LongAdder pathfindingFallback = new LongAdder();
+        private final LongAdder pathfindingBudgetExhausted = new LongAdder();
+        private final LongAdder pathfindingProviderEvaluations = new LongAdder();
     }
 }
