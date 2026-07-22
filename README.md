@@ -12,8 +12,7 @@ configuration, compatibility, and fallback details.
 - [Complete release ZIP](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/download/mobopt-26.1.2-r1/mobopt-paper-26.1.2-release.zip)
 - [Release notes](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/tag/mobopt-26.1.2-r1)
 
-Java 25 is required. JAR SHA-256:
-`8c73be095127da259a8173e841a65842060c26964c9074fd5043525fd4f16bec`
+Java 25 is required. Verify the downloaded JAR against the published SHA-256 checksum.
 
 Build the distributable server with `scripts\build-server.ps1`, then launch it
 with `scripts\start-server.ps1`. This is an independent fork and is not an

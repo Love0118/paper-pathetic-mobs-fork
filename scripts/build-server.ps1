@@ -8,8 +8,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if ($null -ne [System.Environment]::GetEnvironmentVariable('BUILD_NUMBER')) {
-    throw 'BUILD_NUMBER must be unset when using this release script; it only packages the verified local-SNAPSHOT artifact.'
+    throw 'BUILD_NUMBER must be unset when using this release script; the verified Paper base build is supplied internally.'
 }
+$paperBaseCommit = 'e4e17fc90d31c3dca6de8bebc87c741749f8f3df'
+$paperBaseBuild = 73
+$versionChannel = 'MOBOPT'
+$paperVersion = "26.1.2.build.$paperBaseBuild-$($versionChannel.ToLowerInvariant())"
+$gradleVersionArgument = "-Pchannel=$versionChannel"
 $javaHomeCandidates = @($env:JAVA_HOME, 'C:\Program Files\Java\jdk-25')
 $javaSearchRoots = @(
     'C:\Program Files\Java',
@@ -67,24 +72,31 @@ function Assert-SourceState([object]$Expected, [object]$Actual) {
 
 Push-Location $root
 try {
+    $env:BUILD_NUMBER = $paperBaseBuild.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $sourceState = Get-SourceState
     if ($sourceState.Status -and -not $AllowDirty) {
         throw 'The Git worktree is dirty. Commit the release revision first, or use -AllowDirty for a development build.'
     }
 
     if ($Clean) {
-        & .\gradlew.bat --no-daemon clean
+        & .\gradlew.bat --no-daemon $gradleVersionArgument clean
         if ($LASTEXITCODE -ne 0) { throw "Gradle clean failed with exit code $LASTEXITCODE" }
     }
 
-    & .\gradlew.bat --no-daemon applyPatches --console=plain
+    $reportedVersion = (& .\gradlew.bat --no-daemon -q $gradleVersionArgument printPaperVersion | Select-Object -Last 1).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Paper version resolution failed with exit code $LASTEXITCODE" }
+    if ($reportedVersion -ne $paperVersion) {
+        throw "Resolved Paper version '$reportedVersion' does not match expected '$paperVersion'."
+    }
+
+    & .\gradlew.bat --no-daemon $gradleVersionArgument applyPatches --console=plain
     if ($LASTEXITCODE -ne 0) { throw "Patch application failed with exit code $LASTEXITCODE" }
 
-    & .\gradlew.bat --no-daemon build createPaperclipJar --console=plain
+    & .\gradlew.bat --no-daemon $gradleVersionArgument build createPaperclipJar --console=plain
     if ($LASTEXITCODE -ne 0) { throw "Server build failed with exit code $LASTEXITCODE" }
     Assert-SourceState $sourceState (Get-SourceState)
 
-    $builtJar = Join-Path $root 'paper-server\build\libs\paper-paperclip-26.1.2.local-SNAPSHOT.jar'
+    $builtJar = Join-Path $root "paper-server\build\libs\paper-paperclip-$paperVersion.jar"
     if (-not (Test-Path -LiteralPath $builtJar -PathType Leaf)) {
         throw "Expected Paper 26.1.2 Paperclip JAR was not produced: $builtJar"
     }
@@ -94,8 +106,10 @@ try {
     try {
         $manifestEntry = $paperclipArchive.GetEntry('META-INF/MANIFEST.MF')
         $patheticEntry = $paperclipArchive.GetEntry('META-INF/libraries/de/bsommerfeld/pathetic/engine/5.4.6/engine-5.4.6.jar')
-        if ($null -eq $manifestEntry -or $null -eq $patheticEntry) {
-            throw 'The generated JAR is missing the Paperclip manifest or embedded Pathetic engine.'
+        $apiEntryPath = "META-INF/libraries/io/papermc/paper/paper-api/$paperVersion/paper-api-$paperVersion.jar"
+        $apiEntry = $paperclipArchive.GetEntry($apiEntryPath)
+        if ($null -eq $manifestEntry -or $null -eq $patheticEntry -or $null -eq $apiEntry) {
+            throw 'The generated JAR is missing the Paperclip manifest, embedded Pathetic engine, or versioned Paper API.'
         }
         $manifestReader = [System.IO.StreamReader]::new($manifestEntry.Open())
         try {
@@ -105,6 +119,38 @@ try {
         }
         if ($manifest -notmatch '(?m)^Main-Class:\s*io\.papermc\.paperclip\.Main\s*$') {
             throw 'The generated JAR is not an executable Paperclip artifact.'
+        }
+
+        $apiBuffer = [System.IO.MemoryStream]::new()
+        $apiEntryStream = $apiEntry.Open()
+        try {
+            $apiEntryStream.CopyTo($apiBuffer)
+        } finally {
+            $apiEntryStream.Dispose()
+        }
+        $apiBuffer.Position = 0
+        $apiArchive = [System.IO.Compression.ZipArchive]::new(
+            $apiBuffer,
+            [System.IO.Compression.ZipArchiveMode]::Read,
+            $false
+        )
+        try {
+            $apiVersionEntry = $apiArchive.GetEntry('apiVersioning.json')
+            if ($null -eq $apiVersionEntry) {
+                throw 'The embedded Paper API is missing apiVersioning.json.'
+            }
+            $apiVersionReader = [System.IO.StreamReader]::new($apiVersionEntry.Open())
+            try {
+                $apiVersioning = $apiVersionReader.ReadToEnd() | ConvertFrom-Json
+            } finally {
+                $apiVersionReader.Dispose()
+            }
+            if ($apiVersioning.version -ne $paperVersion -or $apiVersioning.currentApiVersion -ne '26.1.2') {
+                throw 'The embedded Paper API version metadata does not match the verified release version.'
+            }
+        } finally {
+            $apiArchive.Dispose()
+            $apiBuffer.Dispose()
         }
     } finally {
         $paperclipArchive.Dispose()
@@ -141,7 +187,9 @@ try {
         'Product: MobOpt Paper 26.1.2',
         "Source-Branch: $($sourceState.Branch)",
         "Source-Commit: $($sourceState.Commit)",
-        'Paper-Base: e4e17fc90d31c3dca6de8bebc87c741749f8f3df',
+        "Paper-Base: $paperBaseCommit",
+        "Paper-Base-Build: $paperBaseBuild",
+        "Bukkit-Version: $paperVersion",
         "Dirty-Development-Build: $([bool]$sourceState.Status)"
     )
 
@@ -155,5 +203,6 @@ try {
     Write-Host "SHA-256: $($hash.Hash.ToLowerInvariant())"
     Write-Host "Release ZIP: $releaseZip"
 } finally {
+    Remove-Item Env:BUILD_NUMBER -ErrorAction SilentlyContinue
     Pop-Location
 }

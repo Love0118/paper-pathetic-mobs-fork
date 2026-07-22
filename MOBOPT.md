@@ -133,7 +133,7 @@ $env:JAVA_HOME = 'C:\path\to\jdk-25'
 .\gradlew.bat --no-daemon createPaperclipJar
 ```
 
-`scripts\build-server.ps1`은 검증된 `local-SNAPSHOT` 산출물만 패키징하며, 오래된 JAR 오인을 막기 위해 `BUILD_NUMBER`가 설정된 CI 환경에서는 실행을 거부합니다. 로컬 릴리스 전에 해당 환경변수를 제거하십시오.
+`scripts\build-server.ps1`은 베이스 커밋에 대응하는 Paper build 73과 `MOBOPT` 채널을 내부에서 고정해 `26.1.2.build.73-mobopt` 산출물을 패키징합니다. 이 형식은 엄격한 Bukkit 버전 파서를 쓰는 기존 플러그인과 호환되면서 포크 빌드임을 보존합니다. 오래된 JAR 오인을 막기 위해 외부 `BUILD_NUMBER`가 설정된 환경에서는 실행을 거부하므로 로컬 릴리스 전에 해당 환경변수를 제거하십시오.
 
 그 뒤 새 서버 디렉터리에서 부팅하여 다음을 확인합니다.
 
