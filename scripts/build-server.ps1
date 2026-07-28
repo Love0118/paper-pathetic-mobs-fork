@@ -56,8 +56,9 @@ function Get-SourceState {
     if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the Git worktree.' }
     $commit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source commit.' }
-    $branch = (& git branch --show-current).Trim()
+    $branch = ((& git branch --show-current) | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the source branch.' }
+    if (-not $branch) { $branch = '(detached)' }
     return [pscustomobject]@{
         Status = $statusLines -join "`n"
         Commit = $commit
