@@ -76,6 +76,7 @@ public class GlobalConfiguration extends ConfigurationPart {
     }
     static void set(final GlobalConfiguration instance) {
         GlobalConfiguration.instance = instance;
+        io.papermc.paper.optimization.MobOptRuntimeMetrics.initialize();
     }
 
     @Setting(Configuration.VERSION_FIELD)
@@ -111,8 +112,8 @@ public class GlobalConfiguration extends ConfigurationPart {
 
         public class PatheticMobPathfinding extends ConfigurationPart {
             @Comment(
-                "Replaces safe flat, exact-target searches from the vanilla WalkNodeEvaluator with the Pathetic pathfinder. " +
-                "Unsupported requests and unsuccessful Pathetic searches retain the original mod's vanilla fallback."
+                "Uses bounded direct and short orthogonal fast paths for supported flat, single-target accuracy 0/1 WalkNodeEvaluator searches. " +
+                "Complex or unsupported requests immediately continue in Paper's original pathfinder."
             )
             public boolean enabled = true;
         }
@@ -122,7 +123,47 @@ public class GlobalConfiguration extends ConfigurationPart {
         public class PlayProtocolFlushConsolidation extends ConfigurationPart {
             @Comment(
                 "Consolidates PLAY-state flushes outside inbound reads until the end of the current Netty event-loop turn while preserving packet order and completion listeners. " +
-                "HANDSHAKING, STATUS, LOGIN, and CONFIGURATION retain Paper's immediate flush behavior."
+                "HANDSHAKING, STATUS, LOGIN, and CONFIGURATION retain Paper's immediate flush behavior. A full server restart is required."
+            )
+            public boolean enabled = true;
+        }
+
+        public PlayProtocolLazyWriteScheduling playProtocolLazyWriteScheduling;
+
+        public class PlayProtocolLazyWriteScheduling extends ConfigurationPart {
+            @Comment(
+                "Queues flush-suspended PLAY writes on Netty's normal FIFO task queue without waking the selector for every packet. " +
+                "Paper's normally scheduled end-of-tick flush provides the wakeup. Other protocols, async sends, pending packets, and immediate flushes retain normal scheduling. A full server restart is required."
+            )
+            public boolean enabled = true;
+        }
+
+        public NetworkZeroCopyDecoding networkZeroCopyDecoding;
+
+        public class NetworkZeroCopyDecoding extends ConfigurationPart {
+            @Comment(
+                "Uses retained Netty slices for complete inbound frames and uncompressed compression-pass-through payloads instead of copying their bytes. " +
+                "Packet boundaries and decoder ownership remain unchanged. A full server restart is required."
+            )
+            public boolean enabled = true;
+        }
+
+        public NetworkFramePrefixInPlace networkFramePrefixInPlace;
+
+        public class NetworkFramePrefixInPlace extends ConfigurationPart {
+            @Comment(
+                "Reserves three bytes of encoder headroom and writes the outbound frame length into that space when the buffer is exclusively owned. " +
+                "Third-party, shared, sliced, composite, or read-only buffers use the original copy path. A full server restart is required."
+            )
+            public boolean enabled = true;
+        }
+
+        public ExplosionBroadcastOptimization explosionBroadcastOptimization;
+
+        public class ExplosionBroadcastOptimization extends ConfigurationPart {
+            @Comment(
+                "Uses Paper's Moonrise nearby-player index to find explosion packet recipients before applying the unchanged three-dimensional 64-block distance check. " +
+                "It does not replace section block updates with chunk resends."
             )
             public boolean enabled = true;
         }

@@ -68,6 +68,37 @@ class PlayFlushConsolidationTest {
         channel.finishAndReleaseAll();
     }
 
+    @Test
+    void explicitFlushThresholdCannotDeferForever() throws Exception {
+        final FlushCounter counter = new FlushCounter();
+        final EmbeddedChannel channel = channel(counter, true);
+        final FlushConsolidationHandler consolidator = channel.pipeline().get(FlushConsolidationHandler.class);
+        final ChannelHandlerContext context = channel.pipeline().context(consolidator);
+
+        for (int i = 0; i < FlushConsolidationHandler.DEFAULT_EXPLICIT_FLUSH_AFTER_FLUSHES; i++) {
+            consolidator.flush(context);
+        }
+
+        assertEquals(1, counter.flushes);
+        channel.runPendingTasks();
+        assertEquals(1, counter.flushes);
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void closeFlushesPendingWrites() {
+        final FlushCounter counter = new FlushCounter();
+        final EmbeddedChannel channel = channel(counter, true);
+
+        channel.pipeline().writeAndFlush(1);
+        assertEquals(0, counter.flushes);
+        channel.close();
+
+        assertEquals(1, counter.flushes);
+        assertEquals(Integer.valueOf(1), channel.<Integer>readOutbound());
+        channel.finishAndReleaseAll();
+    }
+
     private static EmbeddedChannel channel(final FlushCounter counter, final boolean consolidateOutsideReads) {
         final EmbeddedChannel channel = new EmbeddedChannel();
         channel.pipeline().addLast("counter", counter);

@@ -1,6 +1,7 @@
 package io.papermc.paper.optimization.pathfinding;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.pathfinder.AmphibiousNodeEvaluator;
@@ -23,9 +24,10 @@ class PatheticMobPathfindingTest {
         final Set<BlockPos> target = Set.of(new BlockPos(4, 64, 0));
 
         assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 0));
+        assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 1));
         assertFalse(PatheticMobPathfinding.isEligible(new FlyNodeEvaluator(), start, target, 5.0F, 0));
         assertFalse(PatheticMobPathfinding.isEligible(new AmphibiousNodeEvaluator(false), start, target, 5.0F, 0));
-        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 1));
+        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 2));
         assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, Set.of(new BlockPos(4, 65, 0)), 5.0F, 0));
     }
 
@@ -36,6 +38,24 @@ class PatheticMobPathfindingTest {
 
         assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 0));
         assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.01F, 0));
+        assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, target, 5.0F, 1));
+    }
+
+    @Test
+    void accuracyOneRequestsAlreadyAtTheGoalUseVanillaSemantics() {
+        final Node start = walkableNode(0, 64, 0);
+        final Set<BlockPos> adjacentTarget = Set.of(new BlockPos(1, 64, 0));
+
+        assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, adjacentTarget, 5.0F, 0));
+        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), start, adjacentTarget, 5.0F, 1));
+    }
+
+    @Test
+    void patheticWorkUsesVanillasWorldEvaluationBudget() {
+        assertEquals(99, PatheticMobPathfinding.patheticEvaluationBudget(100, 1.0F));
+        assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(2, 1.0F));
+        assertEquals(0, PatheticMobPathfinding.patheticEvaluationBudget(100, Float.NaN));
+        assertEquals(100_000, PatheticMobPathfinding.patheticEvaluationBudget(Integer.MAX_VALUE, 1.0F));
     }
 
     @Test
@@ -47,7 +67,37 @@ class PatheticMobPathfindingTest {
             }
         }
 
-        assertEquals(EnumSet.of(PathType.WALKABLE, PathType.DANGER_FIRE, PathType.DANGER_OTHER, PathType.WATER_BORDER), supported);
+        assertEquals(
+            EnumSet.of(
+                PathType.WALKABLE,
+                PathType.WALKABLE_DOOR,
+                PathType.DANGER_FIRE,
+                PathType.DAMAGE_FIRE,
+                PathType.DANGER_OTHER,
+                PathType.DAMAGE_OTHER,
+                PathType.STICKY_HONEY,
+                PathType.DAMAGE_CAUTIOUS,
+                PathType.WATER_BORDER,
+                PathType.RAIL,
+                PathType.DOOR_OPEN
+            ),
+            supported
+        );
+    }
+
+    @Test
+    void accuracyOneCandidatesPreserveTheOriginalTargetRadius() {
+        final Node start = walkableNode(0, 64, 0);
+        final BlockPos target = new BlockPos(4, 64, 0);
+        final List<BlockPos> candidates = PatheticMobPathfinding.targetCandidates(start, target, 1);
+
+        assertEquals(5, candidates.size());
+        assertEquals(new BlockPos(3, 64, 0), candidates.getFirst());
+        assertTrue(candidates.contains(target));
+        for (final BlockPos candidate : candidates) {
+            final Node endpoint = walkableNode(candidate.getX(), candidate.getY(), candidate.getZ());
+            assertTrue(PatheticMobPathfinding.manhattanDistance(endpoint, target) <= 1);
+        }
     }
 
     @Test
@@ -56,8 +106,10 @@ class PatheticMobPathfindingTest {
 
         assertTrue(budget.tryConsume());
         assertEquals(0, budget.remaining());
+        assertEquals(1, budget.consumed());
         assertFalse(budget.exhausted());
         assertFalse(budget.tryConsume());
+        assertEquals(1, budget.consumed());
         assertTrue(budget.exhausted());
     }
 

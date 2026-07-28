@@ -1,14 +1,10 @@
 package io.papermc.paper.optimization.pathfinding;
 
-import de.bsommerfeld.pathetic.api.pathing.INeighborStrategy;
-import de.bsommerfeld.pathetic.api.pathing.Pathfinder;
-import de.bsommerfeld.pathetic.api.pathing.configuration.PathfinderConfiguration;
-import de.bsommerfeld.pathetic.api.pathing.result.PathfinderResult;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
-import de.bsommerfeld.pathetic.api.wrapper.PathVector;
-import de.bsommerfeld.pathetic.engine.factory.AStarPathfinderFactory;
 import io.papermc.paper.configuration.GlobalConfiguration;
+import io.papermc.paper.optimization.MobOptRuntimeMetrics;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
@@ -25,21 +21,15 @@ import org.jspecify.annotations.Nullable;
 /**
  * Paper integration for the Pathetic pathfinding engine.
  *
- * <p>Only exact vanilla {@link WalkNodeEvaluator} single-target searches are
- * eligible. Unsupported or unsuccessful searches return {@code null}, allowing
- * the existing Paper pathfinder to continue with the already-prepared evaluator.</p>
+ * <p>Only exact vanilla {@link WalkNodeEvaluator} single-target, horizontal
+ * searches are eligible. Accuracy zero targets the requested block; accuracy
+ * one may finish on a horizontal Manhattan neighbour. Unsupported or
+ * unsuccessful searches return {@code null}, allowing the existing Paper
+ * pathfinder to continue with the already-prepared evaluator.</p>
  */
 public final class PatheticMobPathfinding {
-    private static final AStarPathfinderFactory FACTORY = new AStarPathfinderFactory();
-    private static final List<PathVector> HORIZONTAL_CARDINAL_OFFSETS = List.of(
-        PathVector.of(1.0D, 0.0D, 0.0D),
-        PathVector.of(-1.0D, 0.0D, 0.0D),
-        PathVector.of(0.0D, 0.0D, 1.0D),
-        PathVector.of(0.0D, 0.0D, -1.0D)
-    );
-    private static final INeighborStrategy HORIZONTAL_CARDINAL = () -> HORIZONTAL_CARDINAL_OFFSETS;
     private static final int MAX_FAST_DETOUR_OFFSET = 8;
-    private static final int MAX_PATHETIC_ITERATIONS = 100_000;
+    private static final int MAX_PATHETIC_WORK_UNITS = 100_000;
 
     private PatheticMobPathfinding() {
     }
@@ -66,18 +56,14 @@ public final class PatheticMobPathfinding {
             return null;
         }
 
-        final double iterationBudget = (double) maxVisitedNodes * (double) searchDepthMultiplier;
-        if (Double.isNaN(iterationBudget) || iterationBudget < 1.0D) {
-            return null;
-        }
-
         final BlockPos target = targets.iterator().next();
 
         final int maxPathLength = Math.max(1, (int) Math.ceil(maxRange));
-        final int evaluationBudget = (int) Math.min(MAX_PATHETIC_ITERATIONS, Math.floor(iterationBudget) - 1.0D);
+        final int evaluationBudget = patheticEvaluationBudget(maxVisitedNodes, searchDepthMultiplier);
         if (evaluationBudget < 1) {
             return null;
         }
+        MobOptRuntimeMetrics.pathfindingAttempt();
         return findGroundPath(
             region,
             mob,
@@ -85,6 +71,7 @@ public final class PatheticMobPathfinding {
             pathfindingContext,
             start,
             target,
+            accuracy,
             maxRange,
             maxPathLength,
             evaluationBudget
@@ -100,7 +87,8 @@ public final class PatheticMobPathfinding {
     ) {
         if (nodeEvaluator.getClass() != WalkNodeEvaluator.class
             || targets.size() != 1
-            || accuracy != 0
+            || accuracy < 0
+            || accuracy > 1
             || !PatheticNavigationPointProvider.isSupportedFlatType(start.type)
             || !Float.isFinite(start.costMalus)
             || start.costMalus < 0.0F
@@ -110,7 +98,22 @@ public final class PatheticMobPathfinding {
         }
 
         final BlockPos target = targets.iterator().next();
-        return start.y == target.getY() && start.distanceTo(target) < maxRange;
+        return start.y == target.getY()
+            && manhattanDistance(start, target) > accuracy
+            && start.distanceTo(target) < maxRange + accuracy;
+    }
+
+    static int patheticEvaluationBudget(final int maxVisitedNodes, final float searchDepthMultiplier) {
+        final float vanillaBudget = maxVisitedNodes * searchDepthMultiplier;
+        if (!Float.isFinite(vanillaBudget) || vanillaBudget < 3.0F) {
+            return 0;
+        }
+
+        final int vanillaExpansionBudget = Math.max(0, (int) vanillaBudget - 1);
+        // A fast-path work unit is one previously unseen world position. Keep
+        // probes inside vanilla's outer expansion ceiling and cap hostile
+        // multipliers before falling through to the original Paper search.
+        return Math.min(MAX_PATHETIC_WORK_UNITS, vanillaExpansionBudget);
     }
 
     @Nullable
@@ -121,6 +124,7 @@ public final class PatheticMobPathfinding {
         final PathfindingContext pathfindingContext,
         final Node start,
         final BlockPos target,
+        final int accuracy,
         final float maxRange,
         final int maxPathLength,
         final int evaluationBudget
@@ -129,52 +133,66 @@ public final class PatheticMobPathfinding {
         final PatheticEnvironmentContext context = new PatheticEnvironmentContext(
             region, mob, nodeEvaluator, pathfindingContext, start, evaluationBudget
         );
-        final Path directPath = findDirectGroundPath(provider, context, start, target, maxRange);
-        if (directPath != null) {
-            return directPath;
-        }
-        if (context.evaluationBudget().exhausted()) {
-            return null;
+        final List<BlockPos> endpoints = targetCandidates(start, target, accuracy);
+        for (final BlockPos endpoint : endpoints) {
+            final Path directPath = findDirectGroundPath(provider, context, start, endpoint, target, maxRange);
+            if (directPath != null) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.DIRECT, context);
+                return directPath;
+            }
+            if (context.evaluationBudget().exhausted()) {
+                recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
+                return null;
+            }
         }
 
-        final Path detourPath = findOrthogonalDetourGroundPath(provider, context, start, target, maxRange, maxPathLength);
+        // Accuracy-one direct paths keep all five legal endpoints. The more
+        // expensive dogleg probe is intentionally limited to the nearest one;
+        // a miss is only an optimization miss and Paper remains authoritative.
+        final BlockPos detourEndpoint = endpoints.getFirst();
+        final Path detourPath = findOrthogonalDetourGroundPath(
+            provider, context, start, detourEndpoint, target, maxRange, maxPathLength
+        );
         if (detourPath != null) {
+            recordResult(MobOptRuntimeMetrics.PathfindingResult.DETOUR, context);
             return detourPath;
         }
-        if (context.evaluationBudget().exhausted() || context.evaluationBudget().remaining() < 1) {
+        if (context.evaluationBudget().exhausted()) {
+            recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
             return null;
         }
 
-        final PathfinderConfiguration configuration = PathfinderConfiguration.builder()
-            .provider(provider)
-            .async(false)
-            .fallback(false)
-            .maxIterations(Math.min(MAX_PATHETIC_ITERATIONS, context.evaluationBudget().remaining()))
-            .maxLength(maxPathLength)
-            .neighborStrategy(HORIZONTAL_CARDINAL)
-            .validationProcessors(List.of(evaluation -> {
-                final PatheticNavigationPoint point = provider.pointAt(evaluation.getCurrentPathPosition(), context);
-                return point.isTraversable();
-            }))
-            .costProcessor(List.of(evaluation -> {
-                final PatheticNavigationPoint point = provider.pointAt(evaluation.getCurrentPathPosition(), context);
-                return point.cost();
-            }))
-            .build();
+        // Full Pathetic A* followed by vanilla fallback doubles the expensive
+        // work on complex terrain and regresses high-entity workloads. The
+        // optimization is deliberately bounded to direct and short dogleg
+        // paths; complex requests continue immediately in Paper's prepared
+        // PathFinder so plugin-visible behavior remains unchanged.
+        recordResult(MobOptRuntimeMetrics.PathfindingResult.FALLBACK, context);
+        return null;
+    }
 
-        final Pathfinder pathfinder = FACTORY.createPathfinder(configuration);
-        final PathPosition startPosition = PathPosition.of(start.x, start.y, start.z);
-        final PathPosition endPosition = PathPosition.of(target.getX(), target.getY(), target.getZ());
-        final PathfinderResult result = pathfinder.findPath(startPosition, endPosition, context).resultBlocking();
-        if (context.evaluationBudget().exhausted()
-            || result == null
-            || !result.successful()
-            || result.getPath() == null
-            || result.getPath().length() <= 1) {
-            return null;
+    private static void recordResult(
+        final MobOptRuntimeMetrics.PathfindingResult result,
+        final PatheticEnvironmentContext context
+    ) {
+        MobOptRuntimeMetrics.pathfindingResult(
+            result,
+            context.evaluationBudget().consumed(),
+            context.evaluationBudget().exhausted()
+        );
+    }
+
+    static List<BlockPos> targetCandidates(final Node start, final BlockPos target, final int accuracy) {
+        final List<BlockPos> candidates = new ArrayList<>(accuracy == 0 ? 1 : 5);
+        candidates.add(target);
+        if (accuracy == 1) {
+            candidates.add(target.offset(1, 0, 0));
+            candidates.add(target.offset(-1, 0, 0));
+            candidates.add(target.offset(0, 0, 1));
+            candidates.add(target.offset(0, 0, -1));
         }
-
-        return toMinecraftPath(result.getPath(), provider, context, start, target, maxRange);
+        candidates.sort(Comparator.comparingDouble(start::distanceTo));
+        return candidates;
     }
 
     @Nullable
@@ -182,11 +200,12 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos target,
+        final BlockPos endpoint,
+        final BlockPos pathTarget,
         final float maxRange
     ) {
-        final int deltaX = target.getX() - start.x;
-        final int deltaZ = target.getZ() - start.z;
+        final int deltaX = endpoint.getX() - start.x;
+        final int deltaZ = endpoint.getZ() - start.z;
         final int steps = Math.max(Math.abs(deltaX), Math.abs(deltaZ));
         if (steps == 0) {
             return null;
@@ -218,7 +237,7 @@ public final class PatheticMobPathfinding {
             previous = node;
         }
 
-        return new Path(nodes, target, true);
+        return new Path(nodes, pathTarget, true);
     }
 
     private static boolean isSafeDiagonalSide(
@@ -237,23 +256,22 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos target,
+        final BlockPos endpoint,
+        final BlockPos pathTarget,
         final float maxRange,
         final int maxPathLength
     ) {
-        final int deltaX = target.getX() - start.x;
-        final int deltaZ = target.getZ() - start.z;
+        final int deltaX = endpoint.getX() - start.x;
+        final int deltaZ = endpoint.getZ() - start.z;
         if (deltaX == 0 && deltaZ == 0) {
             return null;
         }
 
         if (Math.abs(deltaX) >= Math.abs(deltaZ)) {
-            final Path xDetour = findZDetourPath(provider, context, start, target, maxRange, maxPathLength);
-            return xDetour != null ? xDetour : findXDetourPath(provider, context, start, target, maxRange, maxPathLength);
+            return findZDetourPath(provider, context, start, endpoint, pathTarget, maxRange, maxPathLength);
         }
 
-        final Path zDetour = findXDetourPath(provider, context, start, target, maxRange, maxPathLength);
-        return zDetour != null ? zDetour : findZDetourPath(provider, context, start, target, maxRange, maxPathLength);
+        return findXDetourPath(provider, context, start, endpoint, pathTarget, maxRange, maxPathLength);
     }
 
     @Nullable
@@ -261,40 +279,80 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos target,
+        final BlockPos endpoint,
+        final BlockPos pathTarget,
         final float maxRange,
         final int maxPathLength
     ) {
-        for (int offset = 1; offset <= MAX_FAST_DETOUR_OFFSET; offset++) {
+        Path edgePath = findWaypointGroundPath(
+            provider,
+            context,
+            start,
+            endpoint,
+            pathTarget,
+            maxRange,
+            maxPathLength,
+            new BlockPos(start.x, start.y, start.z + MAX_FAST_DETOUR_OFFSET),
+            new BlockPos(endpoint.getX(), endpoint.getY(), start.z + MAX_FAST_DETOUR_OFFSET)
+        );
+        if (edgePath == null) {
+            if (context.evaluationBudget().exhausted()) {
+                return null;
+            }
+            edgePath = findWaypointGroundPath(
+                provider,
+                context,
+                start,
+                endpoint,
+                pathTarget,
+                maxRange,
+                maxPathLength,
+                new BlockPos(start.x, start.y, start.z - MAX_FAST_DETOUR_OFFSET),
+                new BlockPos(endpoint.getX(), endpoint.getY(), start.z - MAX_FAST_DETOUR_OFFSET)
+            );
+            if (edgePath == null) {
+                return null;
+            }
+        }
+
+        for (int offset = 1; offset < MAX_FAST_DETOUR_OFFSET; offset++) {
             final Path positive = findWaypointGroundPath(
                 provider,
                 context,
                 start,
-                target,
+                endpoint,
+                pathTarget,
                 maxRange,
                 maxPathLength,
                 new BlockPos(start.x, start.y, start.z + offset),
-                new BlockPos(target.getX(), target.getY(), start.z + offset)
+                new BlockPos(endpoint.getX(), endpoint.getY(), start.z + offset)
             );
             if (positive != null) {
                 return positive;
+            }
+            if (context.evaluationBudget().exhausted()) {
+                return edgePath;
             }
 
             final Path negative = findWaypointGroundPath(
                 provider,
                 context,
                 start,
-                target,
+                endpoint,
+                pathTarget,
                 maxRange,
                 maxPathLength,
                 new BlockPos(start.x, start.y, start.z - offset),
-                new BlockPos(target.getX(), target.getY(), start.z - offset)
+                new BlockPos(endpoint.getX(), endpoint.getY(), start.z - offset)
             );
             if (negative != null) {
                 return negative;
             }
+            if (context.evaluationBudget().exhausted()) {
+                return edgePath;
+            }
         }
-        return null;
+        return edgePath;
     }
 
     @Nullable
@@ -302,40 +360,80 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos target,
+        final BlockPos endpoint,
+        final BlockPos pathTarget,
         final float maxRange,
         final int maxPathLength
     ) {
-        for (int offset = 1; offset <= MAX_FAST_DETOUR_OFFSET; offset++) {
+        Path edgePath = findWaypointGroundPath(
+            provider,
+            context,
+            start,
+            endpoint,
+            pathTarget,
+            maxRange,
+            maxPathLength,
+            new BlockPos(start.x + MAX_FAST_DETOUR_OFFSET, start.y, start.z),
+            new BlockPos(start.x + MAX_FAST_DETOUR_OFFSET, endpoint.getY(), endpoint.getZ())
+        );
+        if (edgePath == null) {
+            if (context.evaluationBudget().exhausted()) {
+                return null;
+            }
+            edgePath = findWaypointGroundPath(
+                provider,
+                context,
+                start,
+                endpoint,
+                pathTarget,
+                maxRange,
+                maxPathLength,
+                new BlockPos(start.x - MAX_FAST_DETOUR_OFFSET, start.y, start.z),
+                new BlockPos(start.x - MAX_FAST_DETOUR_OFFSET, endpoint.getY(), endpoint.getZ())
+            );
+            if (edgePath == null) {
+                return null;
+            }
+        }
+
+        for (int offset = 1; offset < MAX_FAST_DETOUR_OFFSET; offset++) {
             final Path positive = findWaypointGroundPath(
                 provider,
                 context,
                 start,
-                target,
+                endpoint,
+                pathTarget,
                 maxRange,
                 maxPathLength,
                 new BlockPos(start.x + offset, start.y, start.z),
-                new BlockPos(start.x + offset, target.getY(), target.getZ())
+                new BlockPos(start.x + offset, endpoint.getY(), endpoint.getZ())
             );
             if (positive != null) {
                 return positive;
+            }
+            if (context.evaluationBudget().exhausted()) {
+                return edgePath;
             }
 
             final Path negative = findWaypointGroundPath(
                 provider,
                 context,
                 start,
-                target,
+                endpoint,
+                pathTarget,
                 maxRange,
                 maxPathLength,
                 new BlockPos(start.x - offset, start.y, start.z),
-                new BlockPos(start.x - offset, target.getY(), target.getZ())
+                new BlockPos(start.x - offset, endpoint.getY(), endpoint.getZ())
             );
             if (negative != null) {
                 return negative;
             }
+            if (context.evaluationBudget().exhausted()) {
+                return edgePath;
+            }
         }
-        return null;
+        return edgePath;
     }
 
     @Nullable
@@ -343,7 +441,8 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos target,
+        final BlockPos endpoint,
+        final BlockPos pathTarget,
         final float maxRange,
         final int maxPathLength,
         final BlockPos firstWaypoint,
@@ -359,11 +458,11 @@ public final class PatheticMobPathfinding {
         if (previous == null) {
             return null;
         }
-        previous = appendClearSegment(provider, context, nodes, previous, secondWaypoint, target, maxRange);
+        previous = appendClearSegment(provider, context, nodes, previous, secondWaypoint, endpoint, maxRange);
         if (previous == null || nodes.size() - 1 > maxPathLength) {
             return null;
         }
-        return new Path(nodes, target, true);
+        return new Path(nodes, pathTarget, true);
     }
 
     @Nullable
@@ -402,45 +501,8 @@ public final class PatheticMobPathfinding {
         return previous;
     }
 
-    @Nullable
-    private static Path toMinecraftPath(
-        final de.bsommerfeld.pathetic.api.pathing.result.Path patheticPath,
-        final PatheticNavigationPointProvider provider,
-        final PatheticEnvironmentContext context,
-        final Node start,
-        final BlockPos target,
-        final float maxRange
-    ) {
-        final List<Node> nodes = new ArrayList<>(boundedInitialCapacity(patheticPath.length()));
-        nodes.add(start);
-        Node previous = start;
-        for (final PathPosition position : patheticPath) {
-            final int x = position.getFlooredX();
-            final int y = position.getFlooredY();
-            final int z = position.getFlooredZ();
-            if (previous.x == x && previous.y == y && previous.z == z) {
-                continue;
-            }
-            if (y != previous.y || Math.abs(x - previous.x) + Math.abs(z - previous.z) != 1) {
-                return null;
-            }
-
-            final PatheticNavigationPoint point = provider.pointAt(position, context);
-            if (!point.isTraversable()) {
-                return null;
-            }
-            final Node node = nodeForPoint(x, y, z, point, previous);
-            if (node.walkedDistance >= maxRange) {
-                return null;
-            }
-            nodes.add(node);
-            previous = node;
-        }
-
-        if (nodes.size() <= 1 || previous.x != target.getX() || previous.y != target.getY() || previous.z != target.getZ()) {
-            return null;
-        }
-        return new Path(nodes, target, true);
+    static int manhattanDistance(final Node node, final BlockPos target) {
+        return Math.abs(node.x - target.getX()) + Math.abs(node.y - target.getY()) + Math.abs(node.z - target.getZ());
     }
 
     private static boolean isZeroCost(final PatheticNavigationPoint point) {

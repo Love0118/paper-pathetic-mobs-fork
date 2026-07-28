@@ -5,10 +5,26 @@ server-internal mob pathfinding and networking optimizations. The public
 `paper-api` module is unchanged. See [MOBOPT.md](MOBOPT.md) for build, launch,
 configuration, compatibility, and fallback details.
 
+The fork includes accuracy-0/1 flat-ground mob pathfinding, duplicate PLAY
+flush/selector-wakeup consolidation, retained-slice decoding, in-place frame
+prefixing, and Moonrise-indexed explosion recipients. Every runtime feature has
+an independent `enabled` switch in `paper-global.yml`; packet writes themselves
+are never deduplicated or reordered.
+
 Build the distributable server with `scripts\build-server.ps1`, then launch it
 with `scripts\start-server.ps1`. This is an independent fork and is not an
 official PaperMC, Mojang, or Microsoft product; fork-specific issues belong in
 this repository rather than PaperMC support channels.
+
+## Download MobOpt Paper 1.21.8
+
+- [Server JAR](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/download/mobopt-1.21.8-r1/mobopt-paper-1.21.8.jar)
+- [JAR SHA-256](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/download/mobopt-1.21.8-r1/mobopt-paper-1.21.8.jar.sha256)
+- [Release ZIP](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/download/mobopt-1.21.8-r1/mobopt-paper-1.21.8-release.zip)
+- [Release notes](https://github.com/Love0118/paper-pathetic-mobs-fork/releases/tag/mobopt-1.21.8-r1)
+
+The release is based on official Paper 1.21.8 build 60. Verify the downloaded
+JAR against its checksum before replacing a server executable.
 
 ---
 

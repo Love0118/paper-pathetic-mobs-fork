@@ -28,6 +28,9 @@ Upstream source references used for this fork:
 ## PulseNet
 
 No PulseNet source code, packet classification tables, or configuration code is
-included. The PLAY-state flush patch is an independent implementation based on
-Paper's existing GPL network patch and Netty's public `FlushConsolidationHandler`
-API.
+included. Publicly documented optimization goals were treated only as behavioral
+inspiration. The PLAY flush and scheduling changes, retained-slice decoding,
+frame-prefix headroom, allocation cleanup, and explosion-recipient indexing were
+designed independently from Paper/Moonrise source and Netty's public APIs. This
+project does not reproduce PulseNet identifiers, algorithms, defaults, tests, or
+configuration layout.

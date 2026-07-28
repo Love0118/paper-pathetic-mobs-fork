@@ -1,0 +1,56 @@
+name: Release MobOpt Paper 1.21.8
+
+on:
+  push:
+    tags:
+      - 'mobopt-1.21.8-r*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: zulu
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and validate release bundle
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/build-server.ps1 -Clean
+
+      - name: Upload validated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobopt-paper-1.21.8
+          if-no-files-found: error
+          path: |
+            dist/mobopt-paper-1.21.8.jar
+            dist/mobopt-paper-1.21.8.jar.sha256
+            dist/mobopt-paper-1.21.8-release.zip
+            dist/mobopt-paper-1.21.8-release.zip.sha256
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/mobopt-1.21.8-r')
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          name: MobOpt Paper 1.21.8 ${{ github.ref_name }}
+          files: |
+            dist/mobopt-paper-1.21.8.jar
+            dist/mobopt-paper-1.21.8.jar.sha256
+            dist/mobopt-paper-1.21.8-release.zip
+            dist/mobopt-paper-1.21.8-release.zip.sha256

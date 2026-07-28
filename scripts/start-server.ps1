@@ -9,6 +9,8 @@ param(
 
     [switch]$AcceptEula,
 
+    [switch]$SkipHashCheck,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ServerArguments
 )
@@ -32,26 +34,50 @@ if (-not (Test-Path -LiteralPath $JarPath)) {
 }
 
 $hashPath = "$JarPath.sha256"
-if (Test-Path -LiteralPath $hashPath) {
+if ($SkipHashCheck) {
+    Write-Warning "Skipping server JAR SHA-256 verification by explicit request: $JarPath"
+} else {
+    if (-not (Test-Path -LiteralPath $hashPath)) {
+        throw "Server JAR SHA-256 file not found: $hashPath. Restore it or explicitly use -SkipHashCheck for a custom development JAR."
+    }
     $hashLine = Get-Content -LiteralPath $hashPath | Select-Object -First 1
-    if ($hashLine -notmatch '^\s*([0-9a-fA-F]{64})\s+') {
+    if ($hashLine -notmatch '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
         throw "Invalid SHA-256 file: $hashPath"
     }
     $expectedHash = $Matches[1].ToLowerInvariant()
+    $expectedFileName = [System.IO.Path]::GetFileName($Matches[2])
+    $actualFileName = [System.IO.Path]::GetFileName($JarPath)
+    if (-not $expectedFileName.Equals($actualFileName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "SHA-256 sidecar names '$expectedFileName', but the selected JAR is '$actualFileName'."
+    }
     $actualHash = (Get-FileHash -LiteralPath $JarPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) {
         throw "Server JAR SHA-256 mismatch: $JarPath"
     }
 }
 
-$javaHomeCandidates = @(
-    $env:JAVA_HOME,
-    'C:\Program Files\Java\jdk-21'
-) | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'bin\java.exe')) }
+$javaHomeCandidates = @($env:JAVA_HOME, 'C:\Program Files\Java\jdk-21')
+$javaSearchRoots = @(
+    'C:\Program Files\Java',
+    'C:\Program Files\Zulu',
+    'C:\Program Files\Eclipse Adoptium',
+    (Join-Path $env:LOCALAPPDATA 'Programs\Zulu'),
+    (Join-Path $env:USERPROFILE '.gradle\jdks')
+)
+foreach ($searchRoot in $javaSearchRoots) {
+    if (Test-Path -LiteralPath $searchRoot) {
+        $javaHomeCandidates += Get-ChildItem -LiteralPath $searchRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '(?i)(jdk.?21|zulu21|21\.)' } |
+            Select-Object -ExpandProperty FullName
+    }
+}
+$javaHomeCandidates = $javaHomeCandidates | Where-Object {
+    $_ -and (Test-Path -LiteralPath (Join-Path $_ 'bin\java.exe'))
+} | Select-Object -Unique
 
 $javaHome = $javaHomeCandidates | Where-Object {
     $version = & (Join-Path $_ 'bin\java.exe') -version 2>&1 | Select-Object -First 1
-    $version -match 'version "21[\.-]'
+    $version -match 'version "21(?:[.\-]|")'
 } | Select-Object -First 1
 
 if (-not $javaHome) {
