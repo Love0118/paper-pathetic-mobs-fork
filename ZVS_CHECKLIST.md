@@ -62,11 +62,13 @@ also pass.
 
 ## 3. Combat effect frames
 
-- [ ] Add tick-local particle aggregation by data, position bucket, and recipient.
-- [ ] Add sound deduplication by sound, category, pitch bucket, and position.
-- [ ] Add per-player distance tiers and adaptive effect budgets.
+- [x] Add tick-local particle aggregation by data, position bucket, and recipient.
+- [x] Add sound deduplication by sound, pitch bucket, position, and strongest volume.
+- [x] Add per-player distance tiers and adaptive effect budgets.
 - [ ] Add last-write-wins coalescing for safe HUD/display/entity state updates.
 - [ ] Measure logical packet reduction before adding network bundles.
+- [x] Add logical request, merge, drop, and emitted packet counters and pass the
+  plugin's 523-test plus PMD verification suite.
 
 ## 4. PLAY network batching
 
