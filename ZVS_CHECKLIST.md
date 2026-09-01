@@ -69,10 +69,13 @@ also pass.
 - [x] Add tick-local particle aggregation by data, position bucket, and recipient.
 - [x] Add sound deduplication by sound, pitch bucket, position, and strongest volume.
 - [x] Add per-player distance tiers and adaptive effect budgets.
-- [ ] Add last-write-wins coalescing for safe HUD/display/entity state updates.
+- [x] Add last-write-wins coalescing for health-display and managed-mob custom
+  name state updates.
 - [ ] Measure logical packet reduction before adding network bundles.
 - [x] Add logical request, merge, drop, and emitted packet counters and pass the
-  plugin's 523-test plus PMD verification suite.
+  plugin's 524-test plus PMD verification suite on Paper API build 121.
+- [x] Add `/zvs metrics` for effect logical/emitted/reduced counts and fork-side
+  pathfinding, damage, PLAY network, and entity-LOD snapshots.
 
 ## 4. PLAY network batching
 
