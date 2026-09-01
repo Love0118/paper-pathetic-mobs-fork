@@ -104,6 +104,20 @@ public class GlobalConfiguration extends ConfigurationPart {
         public boolean enableImmediately = false;
     }
 
+    public Optimizations optimizations;
+
+    public class Optimizations extends ConfigurationPart {
+        public PatheticMobPathfinding patheticMobPathfinding;
+
+        public class PatheticMobPathfinding extends ConfigurationPart {
+            @Comment(
+                "Uses a bounded two-dimensional pathfinder for safe, flat, single-target WalkNodeEvaluator searches. " +
+                "Unsupported terrain, requests, and unsuccessful searches fall back to Paper's pathfinder."
+            )
+            public boolean enabled = true;
+        }
+    }
+
     public Proxies proxies;
 
     public class Proxies extends ConfigurationPart {

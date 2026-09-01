@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 18:42:57 +0900
+Subject: [PATCH] Use Pathetic for eligible 2D ground paths
+
+Intercept only exact vanilla WalkNodeEvaluator single-target horizontal searches with accuracy zero or one. The bounded fast path tries a direct route, a short orthogonal detour, and synchronous Pathetic A* before returning to the already-prepared Paper evaluator. Debug-capture and unsupported terrain retain the upstream path.
+
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+index 253074a0a14115cd3d18aaae6fa5822cf32346c9..e97a5b7fa471c55f8df3dcba19f7711fb36dc9f9 100644
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -55,6 +55,33 @@ public class PathFinder {
+             return null;
+         }
+ 
++        // Paper start - use a bounded two-dimensional ground path fast path
++        if (!this.captureDebug.getAsBoolean()) {
++            Path optimizedPath;
++            try {
++                optimizedPath = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
++                    this.nodeEvaluator,
++                    this.nodeEvaluator.currentContext,
++                    level,
++                    entity,
++                    from,
++                    targets,
++                    maxPathLength,
++                    reachRange,
++                    this.maxVisitedNodes,
++                    maxVisitedNodesMultiplier
++                );
++            } catch (RuntimeException | Error throwable) {
++                this.nodeEvaluator.done();
++                throw throwable;
++            }
++            if (optimizedPath != null) {
++                this.nodeEvaluator.done();
++                return optimizedPath;
++            }
++        }
++        // Paper end - use a bounded two-dimensional ground path fast path
++
+         // Paper start - Perf: remove streams and optimize collection
+         List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayList();
+         for (BlockPos pos : targets) {
