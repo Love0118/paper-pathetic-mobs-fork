@@ -1,7 +1,7 @@
 # ZVS Paper 26.2 Optimization Roadmap
 
-This repository is a dedicated Paper 26.2 fork for the ZombieVsSpear workload.
-It is based on upstream Paper commit
+This repository is a dedicated Paper 26.2 build 121 fork for the
+ZombieVsSpear workload. It is based on upstream Paper commit
 `a2a42c5b12249aaba42a347327fd930a1f94af06` and tracks the 26.1.2
 `paper-pathetic-mobs-fork` through the read-only `mobopt` remote for design
 reference. PulseNet behavior is pinned to Fabric `1.1.0+26.2` commit

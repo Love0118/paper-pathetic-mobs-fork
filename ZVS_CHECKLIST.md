@@ -9,7 +9,7 @@ also pass.
 ## 0. Repository and baseline
 
 - [x] Clone official Paper into the dedicated workspace.
-- [x] Pin and record Paper 26.2 STABLE commit
+- [x] Pin and record Paper 26.2 build 121 STABLE commit
   `a2a42c5b12249aaba42a347327fd930a1f94af06`.
 - [x] Configure `upstream` for Paper and `mobopt` for the 26.1.2 reference fork.
 - [x] Create the `beta` implementation branch.
@@ -76,17 +76,19 @@ also pass.
   `f65faa13210ca193e2686d9a640c4bfb9d73393c` as the reference revision.
 - [x] Record the PulseNet 26.2 behavior/configuration matrix in
   `PULSENET_26_2_MATRIX.md`.
-- [ ] Independently implement every selected PulseNet 26.2 behavior; do not omit
+- [x] Independently implement every selected PulseNet 26.2 behavior; do not omit
   planned functionality solely because source code cannot be copied.
-- [ ] Add packet classification with critical and protocol-transition bypasses.
-- [ ] Add a per-connection PLAY write queue.
-- [ ] Submit queued writes in one Netty event-loop task.
-- [ ] Consolidate flushes with packet-count and byte limits.
-- [ ] Preserve packet order and channel future listeners in tests.
-- [ ] Bundle reduced particle and sound packets within the client limit.
-- [ ] Add logical/physical PPS, write-task, flush, and byte metrics.
-- [ ] Add zero-copy complete-frame decoding with retained-buffer tests.
-- [ ] Add in-place frame prefixing with shared/sliced-buffer fallback tests.
+- [x] Add packet classification with critical and protocol-transition bypasses.
+- [x] Add a per-connection PLAY write queue.
+- [x] Submit queued writes in one Netty event-loop task.
+- [x] Consolidate flushes with packet-count and byte limits.
+- [x] Preserve packet order and channel future listeners in tests.
+- [x] Bundle reduced particle and sound packets within the client limit.
+- [x] Add logical/physical PPS, write-task, flush, and byte metrics.
+- [x] Add zero-copy complete-frame decoding with retained-buffer tests.
+- [x] Add in-place frame prefixing with shared/sliced-buffer fallback tests.
+- [x] Reapply the 0037 feature patch and pass 10 focused network tests plus the
+  full 31-task Paper build (2026-09-01).
 - [ ] Pass login, configuration, compression, disconnect, custom payload, and
   ProtocolLib compatibility tests.
 

@@ -1,0 +1,426 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 19:35:52 +0900
+Subject: [PATCH] Implement ZVS PLAY network batching
+
+
+diff --git a/net/minecraft/network/CompressionDecoder.java b/net/minecraft/network/CompressionDecoder.java
+index ddd5daf92d03dd343e6164d55fff638509175e6d..5e95dfadd7e25e488d17cc2ab97da7fbe397f48d 100644
+--- a/net/minecraft/network/CompressionDecoder.java
++++ b/net/minecraft/network/CompressionDecoder.java
+@@ -16,25 +16,43 @@ public class CompressionDecoder extends ByteToMessageDecoder {
+     private Inflater inflater;
+     private int threshold;
+     private boolean validateDecompressed;
++    private final boolean zvsZeroCopyPassthrough;
+ 
+     // Paper start - Use Velocity cipher
+     @io.papermc.paper.annotation.DoNotUse
+     public CompressionDecoder(final int threshold, final boolean validateDecompressed) {
+-        this(null, threshold, validateDecompressed);
++        this(null, threshold, validateDecompressed, zvsZeroCopyEnabled());
+     }
+     public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed) {
++        this(compressor, threshold, validateDecompressed, zvsZeroCopyEnabled());
++    }
++    public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed, final boolean zeroCopyPassthrough) {
+         this.threshold = threshold;
+         this.validateDecompressed = validateDecompressed;
+         this.inflater = compressor == null ? new Inflater() : null;
+         this.compressor = compressor;
++        this.zvsZeroCopyPassthrough = zeroCopyPassthrough;
+         // Paper end - Use Velocity cipher
+     }
+ 
++    private static boolean zvsZeroCopyEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
++            && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
++    }
++
+     @Override
+     protected void decode(final ChannelHandlerContext ctx, final ByteBuf in, final List<Object> out) throws Exception {
+         int uncompressedLength = VarInt.read(in);
+         if (uncompressedLength == 0) {
+-            out.add(in.readBytes(in.readableBytes()));
++            final int readableBytes = in.readableBytes();
++            if (this.zvsZeroCopyPassthrough) {
++                out.add(in.readRetainedSlice(readableBytes));
++                io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.retainedFrame(readableBytes);
++            } else {
++                out.add(in.readBytes(readableBytes));
++                io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.copiedFrame(readableBytes);
++            }
+         } else {
+             if (this.validateDecompressed) {
+                 if (uncompressedLength < this.threshold) {
+diff --git a/net/minecraft/network/CompressionEncoder.java b/net/minecraft/network/CompressionEncoder.java
+index ac095f59d9f17d8239d6493d1c1e3942139b039f..d3d3f78eb634a0802e8ebea768a66604a415f36e 100644
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -10,12 +10,16 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     private final @org.jspecify.annotations.Nullable Deflater deflater; // Paper - Use Velocity cipher
+     private final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor; // Paper - Use Velocity cipher
+     private int threshold;
++    private final boolean zvsReserveFramePrefix;
+ 
+     // Paper start - Use Velocity cipher
+     public CompressionEncoder(final int threshold) {
+-        this(null, threshold);
++        this(null, threshold, zvsInPlacePrefixEnabled());
+     }
+     public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold) {
++        this(compressor, threshold, zvsInPlacePrefixEnabled());
++    }
++    public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold, final boolean reserveFramePrefix) {
+         this.threshold = threshold;
+         if (compressor == null) {
+             this.encodeBuf = new byte[8192];
+@@ -25,9 +29,16 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             this.deflater = null;
+         }
+         this.compressor = compressor;
++        this.zvsReserveFramePrefix = reserveFramePrefix;
+         // Paper end - Use Velocity cipher
+     }
+ 
++    private static boolean zvsInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
++            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++    }
++
+     @Override
+     protected void encode(final ChannelHandlerContext ctx, final ByteBuf uncompressed, final ByteBuf out) throws Exception { // Paper - Use Velocity cipher
+         int uncompressedLength = uncompressed.readableBytes();
+@@ -78,6 +89,7 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     // Paper start - Use Velocity cipher
+     @Override
+     protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final ByteBuf msg, final boolean preferDirect) throws Exception {
++        final ByteBuf output;
+         if (this.compressor != null) {
+             // We allocate bytes to be compressed plus 1 byte. This covers two cases:
+             //
+@@ -87,11 +99,17 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             //    size the compressed size will ever be is the input size minus one.
+             // - Uncompressed
+             //    This is fairly obvious - we will then have one more than the uncompressed size.
+-            final int initialBufferSize = msg.readableBytes() + 1;
+-            return com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++            final int initialBufferSize = msg.readableBytes() + 1 + (this.zvsReserveFramePrefix ? Varint21LengthFieldPrepender.MAX_VARINT21_BYTES : 0);
++            output = com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++        } else {
++            output = super.allocateBuffer(ctx, msg, preferDirect);
+         }
+ 
+-        return super.allocateBuffer(ctx, msg, preferDirect);
++        if (this.zvsReserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+ 
+     @Override
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 9fbc7e93712672dbab67f931e2aee447d803607b..135d2821957bd5d89f99c99c2c0ba1514c208ad7 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -65,6 +65,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private static final ProtocolInfo<ServerHandshakePacketListener> INITIAL_PROTOCOL = HandshakeProtocols.SERVERBOUND;
+     private final PacketFlow receiving;
+     private volatile boolean sendLoginDisconnect = true;
++    private volatile boolean zvsPlayProtocol;
++    private volatile io.papermc.paper.optimization.zvs.network.@Nullable ZvsPlayWriteQueue zvsPlayWriteQueue;
+     private final Queue<WrappedConsumer> pendingActions = Queues.newConcurrentLinkedQueue(); // Paper - Optimize network
+     public Channel channel;
+     public SocketAddress address;
+@@ -344,7 +346,25 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         }
+ 
+         boolean isLoginProtocol = protocol.id() == ConnectionProtocol.LOGIN;
+-        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> this.sendLoginDisconnect = isLoginProtocol)));
++        boolean isPlayProtocol = protocol.id() == ConnectionProtocol.PLAY;
++        syncAfterConfigurationChange(this.channel.writeAndFlush(configMessage.andThen(ctx -> {
++            this.sendLoginDisconnect = isLoginProtocol;
++            this.zvsPlayProtocol = isPlayProtocol;
++            final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++            if (isPlayProtocol && configuration != null && configuration.optimizations.zvsPlayNetwork.enabled) {
++                final io.papermc.paper.configuration.GlobalConfiguration.Optimizations.ZvsPlayNetwork network = configuration.optimizations.zvsPlayNetwork;
++                this.zvsPlayWriteQueue = new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue(
++                    ctx.executor(), ctx.executor()::inEventLoop, network.maxPacketsPerFlush, network.maxEstimatedBytesPerFlush,
++                    network.bundleEffects ? network.maxEffectBundlePackets : 1, network.bundleEffects ? this::doSendEffectBundle : null
++                );
++            } else {
++                final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
++                this.zvsPlayWriteQueue = null;
++                if (queue != null) {
++                    queue.close();
++                }
++            }
++        })));
+     }
+ 
+     public void setListenerForServerboundHandshake(final PacketListener packetListener) {
+@@ -487,7 +507,20 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         if (this.channel.eventLoop().inEventLoop()) {
+             this.doSendPacket(packet, listener, flush);
+         } else {
+-            this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
++            final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
++            if (this.zvsPlayProtocol && queue != null) {
++                final io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Classification classification =
++                    io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.classify(packet, flush);
++                final net.minecraft.server.level.ServerPlayer player = this.getPlayer();
++                queue.enqueue(new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry(
++                    forceFlush -> this.doSendPacket(packet, listener, forceFlush),
++                    () -> packet.onPacketDispatchFinish(player, null),
++                    classification.barrier(), classification.estimatedBytes(), new ZvsQueuedPacket(packet, listener, player),
++                    classification.effectBundleCandidate()
++                ));
++            } else {
++                this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
++            }
+         }
+     }
+ 
+@@ -523,9 +556,65 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         // Paper end - Optimize network
+     }
+ 
++    @SuppressWarnings("unchecked")
++    private void doSendEffectBundle(final java.util.List<io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry> entries, final boolean flush) {
++        if (!this.isConnected()) {
++            for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
++                final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
++                queued.packet().onPacketDispatchFinish(queued.player(), null);
++            }
++            return;
++        }
++
++        final java.util.List<Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>> packets = new java.util.ArrayList<>(entries.size());
++        boolean needsFuture = false;
++        for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
++            final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
++            packets.add((Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>)queued.packet());
++            needsFuture |= queued.listener() != null || queued.packet().hasFinishListener();
++        }
++
++        try {
++            final net.minecraft.network.protocol.game.ClientboundBundlePacket bundle = new net.minecraft.network.protocol.game.ClientboundBundlePacket(packets);
++            final ChannelFuture future;
++            if (needsFuture) {
++                future = flush ? this.channel.writeAndFlush(bundle) : this.channel.write(bundle);
++            } else if (flush) {
++                future = this.channel.writeAndFlush(bundle, this.channel.voidPromise());
++            } else {
++                future = this.channel.write(bundle, this.channel.voidPromise());
++            }
++            if (needsFuture) {
++                for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
++                    final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
++                    if (queued.listener() != null) {
++                        future.addListener(queued.listener());
++                    }
++                    if (queued.packet().hasFinishListener()) {
++                        future.addListener((ChannelFutureListener)completed -> queued.packet().onPacketDispatchFinish(queued.player(), completed));
++                    }
++                }
++            }
++        } catch (final Exception exception) {
++            LOGGER.error("NetworkException while writing ZVS effect bundle", exception);
++            for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
++                final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
++                queued.packet().onPacketDispatchFinish(queued.player(), null);
++            }
++            final Component reason = Component.translatable("disconnect.genericReason", "Internal Exception: " + exception.getMessage());
++            this.send(new ClientboundDisconnectPacket(reason), PacketSendListener.thenRun(() -> this.disconnect(reason)));
++        }
++    }
++
++    private record ZvsQueuedPacket(Packet<?> packet, @Nullable ChannelFutureListener listener, net.minecraft.server.level.@Nullable ServerPlayer player) {
++    }
++
+     public void flushChannel() {
+         if (this.isConnected()) {
+-            this.flush();
++            final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
++            if (queue == null || this.channel.eventLoop().inEventLoop() || !queue.hasScheduledWrites()) {
++                this.flush();
++            }
+         } else {
+             this.pendingActions.add(new WrappedConsumer(Connection::flush)); // Paper - Optimize network
+         }
+@@ -921,6 +1010,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+ 
+     // Paper start - Optimize network
+     public void clearPacketQueue() {
++        final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue playWriteQueue = this.zvsPlayWriteQueue;
++        this.zvsPlayWriteQueue = null;
++        if (playWriteQueue != null) {
++            playWriteQueue.close();
++        }
+         final net.minecraft.server.level.ServerPlayer player = getPlayer();
+         for (final Consumer<Connection> queuedAction : this.pendingActions) {
+             if (queuedAction instanceof PacketSendAction packetSendAction) {
+diff --git a/net/minecraft/network/PacketEncoder.java b/net/minecraft/network/PacketEncoder.java
+index 27316db9eb78660c6f54e1d1ea4dc7d584c7bb55..657fdcbc41e322c6cf95be87e6e457af4befafc8 100644
+--- a/net/minecraft/network/PacketEncoder.java
++++ b/net/minecraft/network/PacketEncoder.java
+@@ -12,9 +12,31 @@ import org.slf4j.Logger;
+ public class PacketEncoder<T extends PacketListener> extends MessageToByteEncoder<Packet<T>> {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private final ProtocolInfo<T> protocolInfo;
++    private final boolean zvsReserveFramePrefix;
+ 
+     public PacketEncoder(final ProtocolInfo<T> protocolInfo) {
++        this(protocolInfo, zvsInPlacePrefixEnabled());
++    }
++
++    public PacketEncoder(final ProtocolInfo<T> protocolInfo, final boolean reserveFramePrefix) {
+         this.protocolInfo = protocolInfo;
++        this.zvsReserveFramePrefix = reserveFramePrefix;
++    }
++
++    private static boolean zvsInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
++            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++    }
++
++    @Override
++    protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final Packet<T> packet, final boolean preferDirect) throws Exception {
++        final ByteBuf output = super.allocateBuffer(ctx, packet, preferDirect);
++        if (this.zvsReserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+ 
+     static final ThreadLocal<java.util.Locale> ADVENTURE_LOCALE = ThreadLocal.withInitial(() -> null); // Paper - adventure; set player's locale
+diff --git a/net/minecraft/network/Varint21FrameDecoder.java b/net/minecraft/network/Varint21FrameDecoder.java
+index a490f5e09a6d615fa939c9838b19bc32680d8069..d490a15fedab61a73e9102616f7630c7418f44e4 100644
+--- a/net/minecraft/network/Varint21FrameDecoder.java
++++ b/net/minecraft/network/Varint21FrameDecoder.java
+@@ -12,9 +12,21 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+     private static final int MAX_VARINT21_BYTES = 3;
+     private final ByteBuf helperBuf = Unpooled.directBuffer(3);
+     private final @Nullable BandwidthDebugMonitor monitor;
++    private final boolean zvsZeroCopyFrames;
+ 
+     public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor) {
++        this(monitor, zvsZeroCopyEnabled());
++    }
++
++    public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor, final boolean zeroCopyFrames) {
+         this.monitor = monitor;
++        this.zvsZeroCopyFrames = zeroCopyFrames;
++    }
++
++    private static boolean zvsZeroCopyEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
++            && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
+     }
+ 
+     @Override
+@@ -63,7 +75,13 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+                     this.monitor.onReceive(length + VarInt.getByteSize(length));
+                 }
+ 
+-                out.add(in.readBytes(length));
++                if (this.zvsZeroCopyFrames) {
++                    out.add(in.readRetainedSlice(length));
++                    io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.retainedFrame(length);
++                } else {
++                    out.add(in.readBytes(length));
++                    io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.copiedFrame(length);
++                }
+             }
+         }
+     }
+diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minecraft/network/Varint21LengthFieldPrepender.java
+index a3f3684a6f00cd0238c5f6122d449814700eab60..d9e8da76dfdb65b020b2b935be60ac0a76cae082 100644
+--- a/net/minecraft/network/Varint21LengthFieldPrepender.java
++++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
+@@ -4,22 +4,73 @@ import io.netty.buffer.ByteBuf;
+ import io.netty.channel.ChannelHandlerContext;
+ import io.netty.channel.ChannelHandler.Sharable;
+ import io.netty.handler.codec.EncoderException;
+-import io.netty.handler.codec.MessageToByteEncoder;
++import io.netty.handler.codec.MessageToMessageEncoder;
++import java.util.List;
+ 
+ @Sharable
+-public class Varint21LengthFieldPrepender extends MessageToByteEncoder<ByteBuf> {
++public class Varint21LengthFieldPrepender extends MessageToMessageEncoder<ByteBuf> {
+     public static final int MAX_VARINT21_BYTES = 3;
++    private final boolean zvsInPlacePrefix;
++
++    public Varint21LengthFieldPrepender() {
++        this(zvsInPlacePrefixEnabled());
++    }
++
++    public Varint21LengthFieldPrepender(final boolean inPlacePrefix) {
++        this.zvsInPlacePrefix = inPlacePrefix;
++    }
++
++    private static boolean zvsInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
++            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++    }
+ 
+     @Override
+-    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final ByteBuf out) {
++    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final List<Object> out) {
+         int bodyLength = msg.readableBytes();
+         int headerLength = VarInt.getByteSize(bodyLength);
+         if (headerLength > 3) {
+             throw new EncoderException("Packet too large: size " + bodyLength + " is over 8");
+         }
+ 
+-        out.ensureWritable(headerLength + bodyLength);
+-        VarInt.write(out, bodyLength);
+-        out.writeBytes(msg, msg.readerIndex(), bodyLength);
++        if (this.canPrefixInPlace(msg, headerLength)) {
++            final int prefixIndex = msg.readerIndex() - headerLength;
++            writeVarIntAt(msg, prefixIndex, bodyLength);
++            msg.readerIndex(prefixIndex);
++            io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.framePrefix(true);
++            out.add(msg.retain());
++            return;
++        }
++
++        final ByteBuf framed = ctx.alloc().ioBuffer(headerLength + bodyLength);
++        try {
++            VarInt.write(framed, bodyLength);
++            framed.writeBytes(msg, msg.readerIndex(), bodyLength);
++            io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.framePrefix(false);
++            out.add(framed);
++        } catch (final RuntimeException | Error throwable) {
++            framed.release();
++            throw throwable;
++        }
++    }
++
++    private boolean canPrefixInPlace(final ByteBuf buffer, final int headerLength) {
++        return this.zvsInPlacePrefix
++            && buffer.readerIndex() >= headerLength
++            && buffer.readerIndex() >= MAX_VARINT21_BYTES
++            && buffer.refCnt() == 1
++            && buffer.unwrap() == null
++            && !(buffer instanceof io.netty.buffer.CompositeByteBuf)
++            && buffer.nioBufferCount() == 1
++            && !buffer.isReadOnly();
++    }
++
++    private static void writeVarIntAt(final ByteBuf buffer, int index, int value) {
++        while ((value & -128) != 0) {
++            buffer.setByte(index++, value & 127 | 128);
++            value >>>= 7;
++        }
++        buffer.setByte(index, value);
+     }
+ }

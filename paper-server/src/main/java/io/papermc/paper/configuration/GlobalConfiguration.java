@@ -109,6 +109,7 @@ public class GlobalConfiguration extends ConfigurationPart {
     public class Optimizations extends ConfigurationPart {
         public PatheticMobPathfinding patheticMobPathfinding;
         public ZvsManagedDamage zvsManagedDamage;
+        public ZvsPlayNetwork zvsPlayNetwork;
 
         public class PatheticMobPathfinding extends ConfigurationPart {
             @Comment(
@@ -135,6 +136,23 @@ public class GlobalConfiguration extends ConfigurationPart {
             public boolean trustedSpawnEvents = true;
             @Comment("Routes trusted managed deaths to the registered ZVS handler instead of the global event bus.")
             public boolean trustedDeathHandler = true;
+        }
+
+        public class ZvsPlayNetwork extends ConfigurationPart {
+            @Comment("Coalesces normal PLAY writes per connection while preserving FIFO packet and listener order.")
+            public boolean enabled = true;
+            @Comment("Maximum logical packets written before the current batch is flushed. Must be at least 1.")
+            public int maxPacketsPerFlush = 1_024;
+            @Comment("Estimated encoded bytes written before the current batch is flushed. Must be at least 1.")
+            public int maxEstimatedBytesPerFlush = 32_768;
+            @Comment("Bundles consecutive reduced particle and sound packets without reordering other PLAY packets.")
+            public boolean bundleEffects = true;
+            @Comment("Maximum particle and sound packets in one client bundle. Values above 4,000 are clamped.")
+            public int maxEffectBundlePackets = 4_000;
+            @Comment("Use retained slices for complete uncompressed frames instead of copying their payload.")
+            public boolean zeroCopyDecoding = true;
+            @Comment("Prefix exclusively-owned frame buffers in place when sufficient writable headroom is available.")
+            public boolean inPlaceFramePrefix = true;
         }
     }
 
