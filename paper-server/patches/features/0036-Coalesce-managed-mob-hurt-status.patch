@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 19:09:45 +0900
+Subject: [PATCH] Coalesce managed mob hurt status
+
+Let the explicit ZVS damage context suppress duplicate client hurt-status packets while retaining damage, knockback, armor, attribution, and death processing.
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 3a4da514c163e7565fc241835db52c464a5c4734..d1237d6b91b72e97a9dd8eafe6694a5f75567a59 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1511,7 +1511,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             if (blocked && blocksAttacks != null) {
+                 blocksAttacks.onBlocked(level, this);
+             } else {
+-                level.broadcastDamageEvent(this, source);
++                // Paper start - coalesce explicitly managed ZVS hurt status per target/tick
++                if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.shouldBroadcastHurtStatus(this)) {
++                    level.broadcastDamageEvent(this, source);
++                }
++                // Paper end - coalesce explicitly managed ZVS hurt status per target/tick
+             }
+ 
+             if (!source.is(DamageTypeTags.NO_IMPACT) && !blocked) { // CraftBukkit - Prevent marking hurt if the damage is blocked

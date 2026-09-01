@@ -108,17 +108,33 @@ public class GlobalConfiguration extends ConfigurationPart {
 
     public class Optimizations extends ConfigurationPart {
         public PatheticMobPathfinding patheticMobPathfinding;
+        public ZvsManagedDamage zvsManagedDamage;
 
         public class PatheticMobPathfinding extends ConfigurationPart {
             @Comment(
                 "Uses a bounded two-dimensional pathfinder for safe, flat, single-target WalkNodeEvaluator searches. " +
-                "Unsupported terrain, requests, and unsuccessful searches fall back to Paper's pathfinder."
+                "Unsupported requests fall back to Paper before the two-dimensional engine evaluates the world."
             )
             public boolean enabled = true;
             @Comment("Maximum number of shared route suffixes cached per world. Set to 0 to disable route sharing.")
             public int sharedRouteCacheEntries = 16_384;
             @Comment("Maximum number of nodes from one successful path that can populate the shared route cache.")
             public int sharedRouteMaxPathNodes = 256;
+        }
+
+        public class ZvsManagedDamage extends ConfigurationPart {
+            @Comment("Enables the opt-in ZVS managed-damage bridge. Only calls carrying the marker tag use it.")
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on targets submitted through the managed-damage bridge.")
+            public String markerTag = "zvs_managed";
+            @Comment("Event mode: compatibility dispatches every event, hybrid dispatches the first event per target/tick, trusted dispatches none.")
+            public String eventMode = "compatibility";
+            @Comment("Coalesces managed hurt-status packets to one packet per target per tick in hybrid and trusted modes.")
+            public boolean coalesceHurtStatus = true;
+            @Comment("Skips CreatureSpawnEvent only for spawns explicitly submitted through the internal ZVS bridge.")
+            public boolean trustedSpawnEvents = true;
+            @Comment("Routes trusted managed deaths to the registered ZVS handler instead of the global event bus.")
+            public boolean trustedDeathHandler = true;
         }
     }
 

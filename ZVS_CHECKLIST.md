@@ -46,16 +46,19 @@ also pass.
 
 ## 2. Managed damage, spawn, and death pipeline
 
-- [ ] Add explicit ZVS-managed entity/source markers without changing Paper API.
-- [ ] Add ordered tick-local damage request collection.
-- [ ] Preserve sequential armor, absorption, resistance, attribution, and death
+- [x] Add explicit ZVS-managed entity/source markers without changing Paper API.
+- [x] Add an ordered tick-local damage batch entry point.
+- [x] Preserve sequential armor, absorption, resistance, attribution, and death
   semantics.
-- [ ] Add compatibility, hybrid, and trusted event modes.
-- [ ] Add one batch hook for trusted programmatic damage.
-- [ ] Coalesce managed mob hurt/damage notification once per entity/tick.
-- [ ] Add trusted managed spawn/death paths with compatibility fallback.
+- [x] Add compatibility, hybrid, and trusted event modes.
+- [x] Add one server-internal batch hook for trusted programmatic damage.
+- [x] Coalesce managed mob hurt/damage notification once per entity/tick.
+- [x] Add trusted managed spawn/death paths with compatibility fallback.
 - [ ] Test direct damage, area damage, damage-over-time, turret contribution,
   absorption overflow, and synchronous death.
+- [x] Pass ordered batch, marker fallback, hybrid event, hurt-status coalescing,
+  trusted-death-handler, and the plugin's 521-test verification suite on Paper
+  API 26.2.
 
 ## 3. Combat effect frames
 

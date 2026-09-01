@@ -804,7 +804,11 @@ public class CraftEventFactory {
 
     public static CreatureSpawnEvent callCreatureSpawnEvent(net.minecraft.world.entity.LivingEntity entity, SpawnReason spawnReason) {
         CreatureSpawnEvent event = new CreatureSpawnEvent((LivingEntity) entity.getBukkitEntity(), spawnReason);
-        event.callEvent();
+        // Paper start - explicit trusted ZVS spawn path
+        if (io.papermc.paper.optimization.zvs.ZvsManagedLifecycle.shouldDispatchCreatureSpawnEvent()) {
+            event.callEvent();
+        }
+        // Paper end - explicit trusted ZVS spawn path
         return event;
     }
 
@@ -970,7 +974,11 @@ public class CraftEventFactory {
         CraftDamageSource bukkitDamageSource = new CraftDamageSource(damageSource);
         EntityDeathEvent event = new EntityDeathEvent(entity, bukkitDamageSource, new io.papermc.paper.util.TransformingRandomAccessList<>(drops, Entity.DefaultDrop::stack, FROM_FUNCTION), victim.getExpReward(level, damageSource.getEntity())); // Paper - Restore vanilla drops behavior
         populateFields(victim, event); // Paper - make cancellable
-        event.callEvent();
+        // Paper start - explicit trusted ZVS death handler
+        if (!io.papermc.paper.optimization.zvs.ZvsManagedLifecycle.dispatchManagedDeath(victim, event)) {
+            event.callEvent();
+        }
+        // Paper end - explicit trusted ZVS death handler
 
         if (event.isCancelled()) {
             return event;
@@ -1169,7 +1177,11 @@ public class CraftEventFactory {
 
     private static EntityDamageEvent callEntityDamageEvent(EntityDamageEvent event, Entity damagee, boolean cancelled) {
         event.setCancelled(cancelled);
-        event.callEvent();
+        // Paper start - explicit ZVS managed-damage event modes
+        if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.shouldDispatchEvent(damagee)) {
+            event.callEvent();
+        }
+        // Paper end - explicit ZVS managed-damage event modes
 
         if (!event.isCancelled()) {
             event.getEntity().setLastDamageCause(event);
