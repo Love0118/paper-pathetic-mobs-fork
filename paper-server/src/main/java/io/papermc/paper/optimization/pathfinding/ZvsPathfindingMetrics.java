@@ -11,10 +11,11 @@ import org.jspecify.annotations.NullMarked;
 @NullMarked
 public final class ZvsPathfindingMetrics {
     public enum Result {
+        CACHED,
         DIRECT,
         DETOUR,
         ASTAR,
-        FALLBACK
+        NO_PATH
     }
 
     public enum RejectionReason {
@@ -33,6 +34,7 @@ public final class ZvsPathfindingMetrics {
     private static final LongAdder ATTEMPTS = new LongAdder();
     private static final LongAdder EVALUATIONS = new LongAdder();
     private static final LongAdder EXHAUSTED = new LongAdder();
+    private static final LongAdder INVALIDATIONS = new LongAdder();
     private static final LongAdder[] RESULTS = adders(Result.values().length);
     private static final LongAdder[] REJECTIONS = adders(RejectionReason.values().length);
 
@@ -55,6 +57,10 @@ public final class ZvsPathfindingMetrics {
         }
     }
 
+    static void invalidation() {
+        INVALIDATIONS.increment();
+    }
+
     public static Snapshot snapshot() {
         final EnumMap<Result, Long> results = new EnumMap<>(Result.class);
         for (final Result result : Result.values()) {
@@ -68,6 +74,7 @@ public final class ZvsPathfindingMetrics {
             ATTEMPTS.sum(),
             EVALUATIONS.sum(),
             EXHAUSTED.sum(),
+            INVALIDATIONS.sum(),
             Map.copyOf(results),
             Map.copyOf(rejections)
         );
@@ -77,6 +84,7 @@ public final class ZvsPathfindingMetrics {
         ATTEMPTS.reset();
         EVALUATIONS.reset();
         EXHAUSTED.reset();
+        INVALIDATIONS.reset();
         for (final LongAdder counter : RESULTS) {
             counter.reset();
         }
@@ -97,6 +105,7 @@ public final class ZvsPathfindingMetrics {
         long attempts,
         long evaluations,
         long exhausted,
+        long invalidations,
         Map<Result, Long> results,
         Map<RejectionReason, Long> rejections
     ) {

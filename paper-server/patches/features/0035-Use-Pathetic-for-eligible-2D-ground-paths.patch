@@ -3,10 +3,36 @@ From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
 Date: Tue, 1 Sep 2026 18:42:57 +0900
 Subject: [PATCH] Use Pathetic for eligible 2D ground paths
 
-Intercept only exact vanilla WalkNodeEvaluator single-target horizontal searches with accuracy zero or one. The bounded fast path tries a direct route, a short orthogonal detour, and synchronous Pathetic A* before returning to the already-prepared Paper evaluator. Debug-capture and unsupported terrain retain the upstream path.
+Dispatch only exact flat WalkNodeEvaluator requests to the bounded 2D engine. Once the engine evaluates a request, its path or no-path result is final so vanilla cannot repeat the same search. Share successful route suffixes per level and invalidate them after block-state changes.
 
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 9286d9bcf3ec4069e77d3133f3d7bf29b2370c5a..f15cbf1b2ee2b87fc9647192c15dec7115ceabf8 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -174,6 +174,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     public static @Nullable BlockPos lastPhysicsProblem; // Spigot
+     public final Map<ServerExplosion.CacheKey, Float> explosionDensityCache = new java.util.HashMap<>(); // Paper - Optimize explosions
++    // Paper - share successful ZVS two-dimensional route suffixes within this level
++    public final io.papermc.paper.optimization.pathfinding.ZvsSharedPathCache zvs2DPathCache = new io.papermc.paper.optimization.pathfinding.ZvsSharedPathCache();
+     public java.util.ArrayDeque<net.minecraft.world.level.block.RedstoneTorchBlock.Toggle> redstoneUpdateInfos; // Paper - Faster redstone torch rapid clock removal; Move from Map in BlockRedstoneTorch to here
+ 
+     public CraftWorld getWorld() {
+@@ -1149,6 +1151,12 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         }
+         // CraftBukkit end
+ 
++        // Paper start - invalidate shared two-dimensional paths after a real block change
++        if (oldState != newState) {
++            this.zvs2DPathCache.invalidate();
++        }
++        // Paper end - invalidate shared two-dimensional paths after a real block change
++
+         return true;
+     }
+ 
 diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
-index 253074a0a14115cd3d18aaae6fa5822cf32346c9..e97a5b7fa471c55f8df3dcba19f7711fb36dc9f9 100644
+index 253074a0a14115cd3d18aaae6fa5822cf32346c9..622012c20717f111668aa1da2e185b5bd3e70fe0 100644
 --- a/net/minecraft/world/level/pathfinder/PathFinder.java
 +++ b/net/minecraft/world/level/pathfinder/PathFinder.java
 @@ -55,6 +55,33 @@ public class PathFinder {
@@ -15,9 +41,9 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..e97a5b7fa471c55f8df3dcba19f7711f
  
 +        // Paper start - use a bounded two-dimensional ground path fast path
 +        if (!this.captureDebug.getAsBoolean()) {
-+            Path optimizedPath;
++            io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.SearchResult optimizedResult;
 +            try {
-+                optimizedPath = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
++                optimizedResult = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
 +                    this.nodeEvaluator,
 +                    this.nodeEvaluator.currentContext,
 +                    level,
@@ -33,9 +59,9 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..e97a5b7fa471c55f8df3dcba19f7711f
 +                this.nodeEvaluator.done();
 +                throw throwable;
 +            }
-+            if (optimizedPath != null) {
++            if (optimizedResult.handled()) {
 +                this.nodeEvaluator.done();
-+                return optimizedPath;
++                return optimizedResult.path();
 +            }
 +        }
 +        // Paper end - use a bounded two-dimensional ground path fast path

@@ -115,6 +115,10 @@ public class GlobalConfiguration extends ConfigurationPart {
                 "Unsupported terrain, requests, and unsuccessful searches fall back to Paper's pathfinder."
             )
             public boolean enabled = true;
+            @Comment("Maximum number of shared route suffixes cached per world. Set to 0 to disable route sharing.")
+            public int sharedRouteCacheEntries = 16_384;
+            @Comment("Maximum number of nodes from one successful path that can populate the shared route cache.")
+            public int sharedRouteMaxPathNodes = 256;
         }
     }
 

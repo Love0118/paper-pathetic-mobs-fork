@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Normal
@@ -146,6 +148,45 @@ class PatheticMobPathfindingTest {
         assertEquals(7L, snapshot.evaluations());
         assertEquals(1L, snapshot.results().get(ZvsPathfindingMetrics.Result.DIRECT));
         assertEquals(1L, snapshot.rejections().get(ZvsPathfindingMetrics.RejectionReason.VERTICAL));
+    }
+
+    @Test
+    void handledSearchWithoutAPathMustNotFallThroughToVanilla() {
+        final PatheticMobPathfinding.SearchResult notHandled =
+            PatheticMobPathfinding.SearchResult.NOT_HANDLED;
+        final PatheticMobPathfinding.SearchResult handledWithoutPath =
+            PatheticMobPathfinding.SearchResult.handled(null);
+
+        assertFalse(notHandled.handled());
+        assertTrue(handledWithoutPath.handled());
+        assertNull(handledWithoutPath.path());
+    }
+
+    @Test
+    void sharedRouteCacheReusesSuffixesAndInvalidatesTogether() {
+        final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final Node first = walkableNode(0, 64, 0);
+        final Node second = walkableNode(1, 64, 0);
+        second.cameFrom = first;
+        second.walkedDistance = 1.0F;
+        final Node third = walkableNode(2, 64, 0);
+        third.cameFrom = second;
+        third.walkedDistance = 2.0F;
+        final BlockPos target = new BlockPos(2, 64, 0);
+
+        cache.record(17, new net.minecraft.world.level.pathfinder.Path(List.of(first, second, third), target, true), 0);
+
+        assertEquals(2, cache.sizeForTesting());
+        final net.minecraft.world.level.pathfinder.Path suffix = cache.find(17, walkableNode(1, 64, 0), target, 0, 8.0F);
+        assertNotNull(suffix);
+        assertEquals(2, suffix.getNodeCount());
+        assertEquals(target, suffix.getEndNode().asBlockPos());
+
+        final long previousRevision = cache.revision();
+        cache.invalidate();
+        assertEquals(previousRevision + 1, cache.revision());
+        assertEquals(0, cache.sizeForTesting());
+        assertNull(cache.find(17, walkableNode(1, 64, 0), target, 0, 8.0F));
     }
 
     private static Node walkableNode(final int x, final int y, final int z) {

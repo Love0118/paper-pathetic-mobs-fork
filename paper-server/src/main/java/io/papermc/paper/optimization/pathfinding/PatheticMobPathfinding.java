@@ -31,8 +31,10 @@ import org.jspecify.annotations.Nullable;
  * <p>Only exact vanilla {@link WalkNodeEvaluator} single-target, horizontal
  * searches are eligible. Accuracy zero targets the requested block; accuracy
  * one may finish on a horizontal Manhattan neighbour. Unsupported or
- * unsuccessful searches return {@code null}, allowing the existing Paper
- * pathfinder to continue with the already-prepared evaluator.</p>
+ * ineligible searches leave the existing Paper pathfinder in control. Once an
+ * eligible request starts evaluating the world, its result is authoritative,
+ * including a bounded no-path result; it must never trigger a second vanilla
+ * search in the same call.</p>
  */
 @NullMarked
 public final class PatheticMobPathfinding {
@@ -54,8 +56,7 @@ public final class PatheticMobPathfinding {
      * Attempts the optimized path after the caller has prepared the evaluator and
      * obtained its vanilla start node.
      */
-    @Nullable
-    public static Path tryFindPath(
+    public static SearchResult tryFindPath(
         final NodeEvaluator nodeEvaluator,
         final PathfindingContext pathfindingContext,
         final PathNavigationRegion region,
@@ -68,7 +69,7 @@ public final class PatheticMobPathfinding {
         final float searchDepthMultiplier
     ) {
         if (!GlobalConfiguration.get().optimizations.patheticMobPathfinding.enabled) {
-            return null;
+            return SearchResult.NOT_HANDLED;
         }
 
         final RejectionReason rejectionReason = rejectionReason(
@@ -76,7 +77,7 @@ public final class PatheticMobPathfinding {
         );
         if (rejectionReason != null) {
             ZvsPathfindingMetrics.reject(rejectionReason);
-            return null;
+            return SearchResult.NOT_HANDLED;
         }
 
         final BlockPos target = targets.iterator().next();
@@ -85,13 +86,21 @@ public final class PatheticMobPathfinding {
         final int evaluationBudget = patheticEvaluationBudget(maxVisitedNodes, searchDepthMultiplier);
         if (evaluationBudget < 1) {
             ZvsPathfindingMetrics.reject(RejectionReason.EVALUATION_BUDGET);
-            return null;
+            return SearchResult.NOT_HANDLED;
         }
         ZvsPathfindingMetrics.attempt();
-        return findGroundPath(
+        final WalkNodeEvaluator walkNodeEvaluator = (WalkNodeEvaluator) nodeEvaluator;
+        final int pathProfile = ZvsSharedPathCache.profile(mob, walkNodeEvaluator);
+        final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
+        final Path cachedPath = sharedPathCache.find(pathProfile, start, target, accuracy, maxRange);
+        if (cachedPath != null) {
+            ZvsPathfindingMetrics.result(ZvsPathfindingMetrics.Result.CACHED, 0, false);
+            return SearchResult.handled(cachedPath);
+        }
+        final Path path = findGroundPath(
             region,
             mob,
-            (WalkNodeEvaluator) nodeEvaluator,
+            walkNodeEvaluator,
             pathfindingContext,
             start,
             target,
@@ -99,6 +108,12 @@ public final class PatheticMobPathfinding {
             maxRange,
             maxPathLength,
             evaluationBudget
+        );
+        if (path != null) {
+            sharedPathCache.record(pathProfile, path, accuracy);
+        }
+        return SearchResult.handled(
+            path
         );
     }
 
@@ -192,7 +207,7 @@ public final class PatheticMobPathfinding {
                 return directPath;
             }
             if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.FALLBACK, context);
+                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
                 return null;
             }
         }
@@ -206,7 +221,7 @@ public final class PatheticMobPathfinding {
                 return detourPath;
             }
             if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.FALLBACK, context);
+                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
                 return null;
             }
         }
@@ -219,7 +234,7 @@ public final class PatheticMobPathfinding {
             );
             if (!endpointPoint.isTraversable()) {
                 if (context.evaluationBudget().exhausted()) {
-                    recordResult(ZvsPathfindingMetrics.Result.FALLBACK, context);
+                    recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
                     return null;
                 }
                 continue;
@@ -243,12 +258,12 @@ public final class PatheticMobPathfinding {
                 return path;
             }
             if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.FALLBACK, context);
+                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
                 return null;
             }
             remainingAStarIterations -= iterationShare;
         }
-        recordResult(ZvsPathfindingMetrics.Result.FALLBACK, context);
+        recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
         return null;
     }
 
@@ -632,5 +647,18 @@ public final class PatheticMobPathfinding {
 
     private static int boundedInitialCapacity(final int requested) {
         return Math.min(1024, Math.max(4, requested));
+    }
+
+    /**
+     * Distinguishes requests rejected before any 2D world evaluation from
+     * requests fully owned by the 2D engine. A handled search never falls
+     * through to vanilla, including when no path was found.
+     */
+    public record SearchResult(boolean handled, @Nullable Path path) {
+        static final SearchResult NOT_HANDLED = new SearchResult(false, null);
+
+        static SearchResult handled(@Nullable final Path path) {
+            return new SearchResult(true, path);
+        }
     }
 }
