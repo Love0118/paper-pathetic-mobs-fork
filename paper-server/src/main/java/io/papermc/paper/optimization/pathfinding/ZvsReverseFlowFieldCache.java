@@ -2,7 +2,6 @@ package io.papermc.paper.optimization.pathfinding;
 
 import io.papermc.paper.configuration.GlobalConfiguration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -70,7 +69,7 @@ final class ZvsReverseFlowFieldCache {
         final float maxRange,
         final Function<long[], ZvsSharedPathCache.SectionSnapshot> snapshotFactory
     ) {
-        if (!path.canReach() || path.getNodeCount() < 2) {
+        if (path.getNodeCount() < 2) {
             return;
         }
         final Limits limits = limits();
@@ -85,34 +84,31 @@ final class ZvsReverseFlowFieldCache {
                 return;
             }
 
-            final Map<Long, Cell> cells = existing == null
-                ? new HashMap<>(Math.min(limits.maximumCells(), path.getNodeCount() * 2))
-                : new HashMap<>(existing.cells());
-            double suffixCost = 0.0D;
-            long next = path.getNode(path.getNodeCount() - 1).asBlockPos().asLong();
-            for (int index = path.getNodeCount() - 1; index >= 0; index--) {
-                final Node node = path.getNode(index);
-                final long position = node.asBlockPos().asLong();
-                final Cell previous = cells.get(position);
-                if (previous != null || cells.size() < limits.maximumCells()) {
-                    if (previous == null || suffixCost < previous.cost()) {
-                        cells.put(position, new Cell(next, suffixCost, node.type, node.costMalus));
-                    }
-                }
-                next = position;
-                if (index > 0) {
-                    final Node prior = path.getNode(index - 1);
-                    suffixCost += prior.distanceTo(node) + Math.max(0.0F, node.costMalus);
+            final ZvsSharedPathCache.SectionSnapshot routeSnapshot = snapshotFactory.apply(sections(path));
+            final FlowField merged;
+            if (existing == null) {
+                merged = new FlowField(Math.min(limits.maximumCells(), path.getNodeCount() * 2));
+                merged.withSnapshot(routeSnapshot);
+            } else {
+                merged = existing;
+                if (!merged.mergeSnapshot(routeSnapshot)) {
+                    // A section used by the existing routes changed between
+                    // records. Discard those routes instead of mixing cells
+                    // evaluated against two world revisions.
+                    merged.clear();
+                    merged.withSnapshot(routeSnapshot);
                 }
             }
-            if (cells.size() < 2) {
+            merged.merge(path, accuracy, limits.maximumCells());
+            if (merged.size() < 2) {
                 return;
             }
-            final FlowField merged = new FlowField(Map.copyOf(cells)).withSnapshot(snapshotFactory.apply(sections(cells)));
             this.fields.put(key, merged);
             this.demand.remove(key);
             trim(this.fields, limits.maximumFields());
-            ZvsPathfindingMetrics.flowFieldBuild(cells.size());
+            if (existing == null) {
+                ZvsPathfindingMetrics.flowFieldBuild(merged.size());
+            }
         }
     }
 
@@ -126,7 +122,10 @@ final class ZvsReverseFlowFieldCache {
         final int accuracy,
         final float maxRange
     ) {
-        return new Key(profile, target.asLong(), accuracy, Math.max(1, (int)Math.ceil(maxRange)));
+        // A partial path can terminate because its caller exhausted the allowed
+        // search range. Keep those fields isolated so a wider request is never
+        // satisfied by a narrower request's terminal node.
+        return new Key(profile, target.asLong(), accuracy, Float.floatToIntBits(maxRange));
     }
 
     private static Limits limits() {
@@ -147,10 +146,11 @@ final class ZvsReverseFlowFieldCache {
         }
     }
 
-    private static long[] sections(final Map<Long, Cell> cells) {
+    private static long[] sections(final Path path) {
         final it.unimi.dsi.fastutil.longs.LongOpenHashSet sections =
             new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
-        for (final long position : cells.keySet()) {
+        for (int index = 0; index < path.getNodeCount(); index++) {
+            final long position = path.getNode(index).asBlockPos().asLong();
             sections.add(SectionPos.asLong(
                 SectionPos.blockToSectionCoord(BlockPos.getX(position)),
                 SectionPos.blockToSectionCoord(BlockPos.getY(position)),
@@ -160,24 +160,115 @@ final class ZvsReverseFlowFieldCache {
         return sections.toLongArray();
     }
 
-    record FlowField(
-        Map<Long, Cell> cells,
-        ZvsSharedPathCache.@Nullable SectionSnapshot snapshot
-    ) {
+    static final class FlowField {
+        private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<Cell> cells;
+        private final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap sectionRevisions =
+            new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+
         FlowField(final Map<Long, Cell> cells) {
-            this(cells, null);
+            this(cells.size());
+            this.cells.putAll(cells);
         }
 
-        FlowField withSnapshot(final ZvsSharedPathCache.SectionSnapshot snapshot) {
-            return new FlowField(this.cells, snapshot);
+        FlowField(final int expectedCells) {
+            this.cells = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>(expectedCells);
+            this.sectionRevisions.defaultReturnValue(Long.MIN_VALUE);
         }
 
-        boolean isCurrent(final Predicate<ZvsSharedPathCache.SectionSnapshot> snapshotValidator) {
-            return this.snapshot == null || snapshotValidator.test(this.snapshot);
+        synchronized FlowField withSnapshot(final ZvsSharedPathCache.SectionSnapshot snapshot) {
+            this.sectionRevisions.clear();
+            for (int index = 0; index < snapshot.sections().length; index++) {
+                this.sectionRevisions.put(snapshot.sections()[index], snapshot.revisions()[index]);
+            }
+            return this;
+        }
+
+        synchronized boolean mergeSnapshot(final ZvsSharedPathCache.SectionSnapshot snapshot) {
+            for (int index = 0; index < snapshot.sections().length; index++) {
+                final long section = snapshot.sections()[index];
+                final long previous = this.sectionRevisions.get(section);
+                if (previous != Long.MIN_VALUE && previous != snapshot.revisions()[index]) {
+                    return false;
+                }
+            }
+            for (int index = 0; index < snapshot.sections().length; index++) {
+                this.sectionRevisions.put(snapshot.sections()[index], snapshot.revisions()[index]);
+            }
+            return true;
+        }
+
+        synchronized void merge(final Path path, final int accuracy, final int maximumCells) {
+            long next = path.getNode(path.getNodeCount() - 1).asBlockPos().asLong();
+            for (int index = path.getNodeCount() - 1; index >= 0; index--) {
+                final Node node = path.getNode(index);
+                final long position = node.asBlockPos().asLong();
+                final Cell previous = this.cells.get(position);
+                final double candidateCost;
+                final boolean candidateReached;
+                if (index == path.getNodeCount() - 1) {
+                    candidateCost = path.canReach()
+                        ? 0.0D
+                        : Math.max(0, Math.abs(node.x - path.getTarget().getX())
+                            + Math.abs(node.y - path.getTarget().getY())
+                            + Math.abs(node.z - path.getTarget().getZ()) - accuracy);
+                    candidateReached = path.canReach();
+                } else {
+                    final Cell nextCell = this.cells.get(next);
+                    if (nextCell == null) {
+                        // The field reached its cell cap before this route's
+                        // suffix could be represented. Never insert a prefix
+                        // that would point at a missing next hop.
+                        break;
+                    }
+                    final Node nextNode = path.getNode(index + 1);
+                    candidateCost = nextCell.cost()
+                        + node.distanceTo(nextNode)
+                        + Math.max(0.0F, nextNode.costMalus);
+                    candidateReached = nextCell.reached();
+                }
+
+                if (previous == null && this.cells.size() >= maximumCells) {
+                    break;
+                }
+                if (previous == null
+                    || candidateReached && !previous.reached()
+                    || candidateReached == previous.reached() && candidateCost < previous.cost()) {
+                    this.cells.put(position, new Cell(
+                        index == path.getNodeCount() - 1 ? position : next,
+                        candidateCost, node.type, node.costMalus, candidateReached
+                    ));
+                }
+                next = position;
+            }
+        }
+
+        synchronized void clear() {
+            this.cells.clear();
+            this.sectionRevisions.clear();
+        }
+
+        synchronized int size() {
+            return this.cells.size();
+        }
+
+        synchronized boolean isCurrent(final Predicate<ZvsSharedPathCache.SectionSnapshot> snapshotValidator) {
+            if (this.sectionRevisions.isEmpty()) {
+                return true;
+            }
+            final long[] sections = new long[this.sectionRevisions.size()];
+            final long[] revisions = new long[this.sectionRevisions.size()];
+            int index = 0;
+            for (final it.unimi.dsi.fastutil.longs.Long2LongMap.Entry entry
+                : this.sectionRevisions.long2LongEntrySet()) {
+                sections[index] = entry.getLongKey();
+                revisions[index] = entry.getLongValue();
+                index++;
+            }
+            return snapshotValidator.test(new ZvsSharedPathCache.SectionSnapshot(sections, revisions));
         }
 
         @Nullable
-        Path toPath(final Node start, final BlockPos target, final float maxRange, final int maxPathLength) {
+        synchronized Path toPath(final Node start, final BlockPos target, final float maxRange, final int maxPathLength) {
             long position = start.asBlockPos().asLong();
             if (!this.cells.containsKey(position)) {
                 return null;
@@ -194,7 +285,7 @@ final class ZvsReverseFlowFieldCache {
                     return null;
                 }
                 if (cell.next() == position) {
-                    return nodes.size() > 1 ? new Path(nodes, target, true) : null;
+                    return nodes.size() > 1 ? new Path(nodes, target, cell.reached()) : null;
                 }
                 final long nextPosition = cell.next();
                 final Cell next = this.cells.get(nextPosition);
@@ -219,10 +310,10 @@ final class ZvsReverseFlowFieldCache {
         }
     }
 
-    record Cell(long next, double cost, PathType pathType, float malus) {
+    record Cell(long next, double cost, PathType pathType, float malus, boolean reached) {
     }
 
-    private record Key(ZvsSharedPathCache.PathProfile profile, long target, int accuracy, int range) {
+    private record Key(ZvsSharedPathCache.PathProfile profile, long target, int accuracy, int maxRangeBits) {
     }
 
     private record Limits(int buildAfter, int maximumCells, int maximumFields) {

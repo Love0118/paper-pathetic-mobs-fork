@@ -15,10 +15,18 @@ param(
     [int]$MeasureTicks = 2400,
     [ValidateRange(1, 10)]
     [int]$Repetitions = 3,
+    [ValidateRange(0, 100000)]
+    [int]$DamageIntervalTicks = 0,
+    [ValidateRange(1, 64)]
+    [int]$DamageHitsPerTarget = 4,
+    [ValidateRange(0.000001, 1000.0)]
+    [double]$DamageAmount = 0.0001,
     [string]$Heap = "4G",
     [string]$JavaExecutable = "java",
     [string]$JcmdExecutable = "jcmd",
     [string]$JfrExecutable = "jfr",
+    [string]$StockPaperGlobalConfig = "",
+    [string]$CandidatePaperGlobalConfig = "",
     [switch]$AcceptEula
 )
 
@@ -30,6 +38,8 @@ if (-not $AcceptEula) {
 $stockPath = (Resolve-Path -LiteralPath $StockJar).Path
 $candidatePath = (Resolve-Path -LiteralPath $CandidateJar).Path
 $pluginPath = (Resolve-Path -LiteralPath $PluginJar).Path
+$stockConfigPath = if ([string]::IsNullOrWhiteSpace($StockPaperGlobalConfig)) { $null } else { (Resolve-Path -LiteralPath $StockPaperGlobalConfig).Path }
+$candidateConfigPath = if ([string]::IsNullOrWhiteSpace($CandidatePaperGlobalConfig)) { $null } else { (Resolve-Path -LiteralPath $CandidatePaperGlobalConfig).Path }
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 $sessionPath = Join-Path $outputRoot (Get-Date -Format "yyyyMMdd-HHmmss")
 New-Item -ItemType Directory -Path $sessionPath -Force | Out-Null
@@ -102,7 +112,7 @@ function Invoke-Jcmd {
 }
 
 function New-BenchmarkFiles {
-    param([string]$RunPath)
+    param([string]$RunPath, [string]$Variant)
     New-Item -ItemType Directory -Path $RunPath -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $RunPath "plugins") -Force | Out-Null
     Write-Utf8File -Path (Join-Path $RunPath "eula.txt") -Content "eula=true`n"
@@ -146,6 +156,12 @@ world-settings:
       villagers: 0
 "@
     Copy-Item -LiteralPath $pluginPath -Destination (Join-Path $RunPath "plugins\ZombieVsSpear.jar") -Force
+    $paperConfigPath = if ($Variant -eq "stock") { $stockConfigPath } else { $candidateConfigPath }
+    if ($null -ne $paperConfigPath) {
+        $configDirectory = Join-Path $RunPath "config"
+        New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $paperConfigPath -Destination (Join-Path $configDirectory "paper-global.yml") -Force
+    }
 }
 
 function Add-SyntheticLoad {
@@ -219,7 +235,7 @@ function Invoke-BenchmarkRun {
     )
     $runName = "{0:D2}-{1}-r{2}" -f $Sequence, $Variant, $Repetition
     $runPath = Join-Path $sessionPath $runName
-    New-BenchmarkFiles -RunPath $runPath
+    New-BenchmarkFiles -RunPath $runPath -Variant $Variant
     $stdoutPath = Join-Path $runPath "console.stdout.log"
     $stderrPath = Join-Path $runPath "console.stderr.log"
     $jfrPath = Join-Path $runPath "measure.jfr"
@@ -256,10 +272,22 @@ function Invoke-BenchmarkRun {
         Add-SyntheticLoad -Process $process
         Wait-LogMatchCount -Process $process -LogPath $latestLog -Pattern "ZVS_BENCH_SETUP_DONE" -PreviousCount 0 -TimeoutSeconds 180 | Out-Null
 
+        if ($DamageIntervalTicks -gt 0) {
+            $amountText = $DamageAmount.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
+            Send-ServerCommand -Process $process -Command "zvs benchdamage start zvs_bench $DamageIntervalTicks $DamageHitsPerTarget $amountText"
+            $process.StandardInput.Flush()
+            Wait-LogMatchCount -Process $process -LogPath $latestLog -Pattern "ZVS_DAMAGE_BENCH_STARTED" -PreviousCount 0 -TimeoutSeconds 180 | Out-Null
+        }
+
         Send-ServerCommand -Process $process -Command "tick sprint $WarmupTicks"
         $process.StandardInput.Flush()
         Wait-LogMatchCount -Process $process -LogPath $latestLog -Pattern "Sprint completed" -PreviousCount 0 -TimeoutSeconds 600 | Out-Null
 
+        if ($DamageIntervalTicks -gt 0) {
+            Send-ServerCommand -Process $process -Command "zvs benchdamage status"
+            $process.StandardInput.Flush()
+            Wait-LogMatchCount -Process $process -LogPath $latestLog -Pattern "ZVS_DAMAGE_BENCH targets=" -PreviousCount 0 -TimeoutSeconds 60 | Out-Null
+        }
         Send-ServerCommand -Process $process -Command "zvs metrics"
         $process.StandardInput.Flush()
         Invoke-Jcmd -ProcessId $process.Id -Arguments @("JFR.start", "name=zvs", "settings=profile") | Out-Null
@@ -270,6 +298,11 @@ function Invoke-BenchmarkRun {
         Invoke-Jcmd -ProcessId $process.Id -Arguments @("JFR.stop", "name=zvs") | Out-Null
         Send-ServerCommand -Process $process -Command "execute store result score #alive zvs_count run execute if entity @e[tag=zvs_bench]"
         Send-ServerCommand -Process $process -Command "scoreboard players get #alive zvs_count"
+        if ($DamageIntervalTicks -gt 0) {
+            Send-ServerCommand -Process $process -Command "zvs benchdamage status"
+            $process.StandardInput.Flush()
+            Wait-LogMatchCount -Process $process -LogPath $latestLog -Pattern "ZVS_DAMAGE_BENCH targets=" -PreviousCount 1 -TimeoutSeconds 60 | Out-Null
+        }
         Send-ServerCommand -Process $process -Command "zvs metrics"
         Send-ServerCommand -Process $process -Command "stop"
         $process.StandardInput.Flush()
@@ -303,7 +336,26 @@ function Invoke-BenchmarkRun {
         throw "$Variant entity count changed: initial=$initialAlive final=$finalAlive expected=$EntityCount"
     }
     $metricLines = $consoleText -split "`r?`n" | Where-Object {
-        $_ -match "effects logical=|pathfinding Snapshot|network Snapshot|damage Snapshot|entity-lod Snapshot"
+        $_ -match "effects logical=|pathfinding Snapshot|network Snapshot|damage Snapshot|entity-lod Snapshot|ZVS_DAMAGE_BENCH targets="
+    }
+    $damagePulses = 0L
+    $damageRequests = 0L
+    $damageEvents = 0L
+    $pathRequests = 0L
+    if ($DamageIntervalTicks -gt 0) {
+        $damageMatches = [regex]::Matches(
+            $consoleText,
+            "ZVS_DAMAGE_BENCH targets=[0-9]+ hitsPerTarget=[0-9]+ pulses=([0-9]+) requests=([0-9]+) events=([0-9]+).*?pathRequests=([0-9]+)"
+        )
+        if ($damageMatches.Count -lt 2) {
+            throw "$Variant run did not record both damage-load snapshots."
+        }
+        $warmupDamage = $damageMatches[0]
+        $measuredDamage = $damageMatches[$damageMatches.Count - 1]
+        $damagePulses = [long]$measuredDamage.Groups[1].Value - [long]$warmupDamage.Groups[1].Value
+        $damageRequests = [long]$measuredDamage.Groups[2].Value - [long]$warmupDamage.Groups[2].Value
+        $damageEvents = [long]$measuredDamage.Groups[3].Value - [long]$warmupDamage.Groups[3].Value
+        $pathRequests = [long]$measuredDamage.Groups[4].Value - [long]$warmupDamage.Groups[4].Value
     }
     $jfrHash = (Get-FileHash -LiteralPath $jfrPath -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Host "[$runName] average MSPT $($sprint.averageMspt)"
@@ -314,6 +366,10 @@ function Invoke-BenchmarkRun {
         averageMspt = $sprint.averageMspt
         initialAlive = $initialAlive
         finalAlive = $finalAlive
+        damagePulses = $damagePulses
+        damageRequests = $damageRequests
+        damageEvents = $damageEvents
+        pathRequests = $pathRequests
         sprintLine = $sprint.line
         metrics = @($metricLines)
         jfr = $jfrPath
@@ -354,6 +410,9 @@ $report = [ordered]@{
     warmupTicks = $WarmupTicks
     measureTicks = $MeasureTicks
     repetitions = $Repetitions
+    damageIntervalTicks = $DamageIntervalTicks
+    damageHitsPerTarget = $DamageHitsPerTarget
+    damageAmount = $DamageAmount
     stockJar = $stockPath
     stockSha256 = (Get-FileHash -LiteralPath $stockPath -Algorithm SHA256).Hash.ToLowerInvariant()
     candidateJar = $candidatePath

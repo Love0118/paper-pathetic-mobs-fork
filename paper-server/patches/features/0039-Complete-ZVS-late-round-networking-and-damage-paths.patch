@@ -1,0 +1,371 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 23:51:57 +0900
+Subject: [PATCH] Complete ZVS late-round networking and damage paths
+
+
+diff --git a/net/minecraft/network/CompressionDecoder.java b/net/minecraft/network/CompressionDecoder.java
+index 5e95dfadd7e25e488d17cc2ab97da7fbe397f48d..ff85129b1c5aad7559862ee749a21b107fa2598e 100644
+--- a/net/minecraft/network/CompressionDecoder.java
++++ b/net/minecraft/network/CompressionDecoder.java
+@@ -37,8 +37,7 @@ public class CompressionDecoder extends ByteToMessageDecoder {
+
+     private static boolean zvsZeroCopyEnabled() {
+         final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
+-        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
+-            && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
+     }
+
+     @Override
+diff --git a/net/minecraft/network/CompressionEncoder.java b/net/minecraft/network/CompressionEncoder.java
+index d3d3f78eb634a0802e8ebea768a66604a415f36e..d8145b39218bb4c56122407dc52d45787a56a3fe 100644
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -35,8 +35,7 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+
+     private static boolean zvsInPlacePrefixEnabled() {
+         final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
+-        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
+-            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
+     }
+
+     @Override
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index cb7523930c063f2e7c1f7ac3f8e23dbc74f28790..6269548c9f4aeb539347cd3dd7e09fb831b8e8d9 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -67,6 +67,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+     private volatile boolean sendLoginDisconnect = true;
+     private volatile boolean zvsPlayProtocol;
+     private volatile io.papermc.paper.optimization.zvs.network.@Nullable ZvsPlayWriteQueue zvsPlayWriteQueue;
++    private volatile io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.@Nullable Policy zvsPlayPolicy;
++    private volatile boolean zvsPlayOffThreadBypass;
+     private final Queue<WrappedConsumer> pendingActions = Queues.newConcurrentLinkedQueue(); // Paper - Optimize network
+     public Channel channel;
+     public SocketAddress address;
+@@ -354,17 +356,34 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+             io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.configure(
+                 configuration != null && configuration.optimizations.zvsPlayNetwork.metricsEnabled
+             );
++            final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue previousQueue = this.zvsPlayWriteQueue;
++            this.zvsPlayWriteQueue = null;
++            if (previousQueue != null) {
++                previousQueue.close();
++            }
+             if (isPlayProtocol && configuration != null && configuration.optimizations.zvsPlayNetwork.enabled) {
+                 final io.papermc.paper.configuration.GlobalConfiguration.Optimizations.ZvsPlayNetwork network = configuration.optimizations.zvsPlayNetwork;
+-                this.zvsPlayWriteQueue = new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue(
+-                    ctx.executor(), ctx.executor()::inEventLoop, network.maxPacketsPerFlush, network.maxEstimatedBytesPerFlush
+-                );
+-            } else {
+-                final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
+-                this.zvsPlayWriteQueue = null;
+-                if (queue != null) {
+-                    queue.close();
++                this.zvsPlayPolicy = io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Policy.from(network);
++                this.zvsPlayOffThreadBypass = network.offThreadBypass;
++                if (network.writeQueue) {
++                    final long batchBytes = network.maxBatchBytes <= 0
++                        ? 0L
++                        : Math.max(1L, (long)network.maxBatchBytes - Math.max(0, network.safetyMarginBytes));
++                    this.zvsPlayWriteQueue = new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue(
++                        ctx.executor(),
++                        (task, delayMillis) -> ctx.executor().schedule(task, delayMillis, java.util.concurrent.TimeUnit.MILLISECONDS),
++                        ctx.executor()::inEventLoop,
++                        ctx::flush,
++                        network.maxPacketsPerFlush,
++                        batchBytes,
++                        io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.parseMode(network.batchingMode),
++                        network.flushIntervalMillis,
++                        network.packetCoalescing ? Math.min(4_096, Math.max(1, network.maxCoalescedPackets)) : 0
++                    );
+                 }
++            } else {
++                this.zvsPlayPolicy = null;
++                this.zvsPlayOffThreadBypass = false;
+             }
+         })));
+     }
+@@ -509,13 +528,24 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         // Paper start - preserve ZVS PLAY write order across all calling threads
+         final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
+         if (this.zvsPlayProtocol && queue != null) {
++            final io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Policy policy = this.zvsPlayPolicy;
+             final io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Classification classification =
+-                io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.classify(packet, flush);
++                io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.classify(
++                    packet, flush, java.util.Objects.requireNonNull(policy, "PLAY queue requires a packet policy")
++                );
+             final net.minecraft.server.level.ServerPlayer player = this.getPlayer();
+             queue.enqueue(new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry(
+-                forceFlush -> this.doSendPacket(packet, listener, forceFlush),
++                (packetToWrite, forceFlush) -> this.doSendPacketMeasured(
++                    packetToWrite == null ? packet : packetToWrite, listener, forceFlush
++                ),
+                 () -> packet.onPacketDispatchFinish(player, null),
+-                classification.barrier(), classification.estimatedBytes()
++                classification.barrier()
++                    || (this.zvsPlayOffThreadBypass && !ca.spottedleaf.moonrise.common.util.TickThread.isTickThread()),
++                classification.estimatedBytes(),
++                packet,
++                classification.action() == io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Action.COALESCE
++                    && listener == null
++                    && !packet.hasFinishListener()
+             ));
+         } else if (this.channel.eventLoop().inEventLoop()) {
+             this.doSendPacket(packet, listener, flush);
+@@ -558,13 +588,25 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         // Paper end - Optimize network
+     }
+
++    private long doSendPacketMeasured(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
++        final io.netty.channel.ChannelOutboundBuffer outboundBuffer = this.channel.unsafe().outboundBuffer();
++        final long before = outboundBuffer == null ? 0L : outboundBuffer.totalPendingWriteBytes();
++        this.doSendPacket(packet, listener, false);
++        final long written = outboundBuffer == null ? 0L : Math.max(0L, outboundBuffer.totalPendingWriteBytes() - before);
++        if (flush) {
++            this.channel.flush();
++        }
++        if (outboundBuffer == null) {
++            return 0L;
++        }
++        return written;
++    }
++
+     public void flushChannel() {
+         if (this.isConnected()) {
+             final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
+             if (queue != null && queue.hasScheduledWrites()) {
+-                if (this.channel.eventLoop().inEventLoop()) {
+-                    queue.drainNow();
+-                }
++                queue.requestTickDrain();
+                 return;
+             }
+             this.flush();
+diff --git a/net/minecraft/network/PacketEncoder.java b/net/minecraft/network/PacketEncoder.java
+index 657fdcbc41e322c6cf95be87e6e457af4befafc8..dc4d873327cf22b6a874738e1d670325c315d824 100644
+--- a/net/minecraft/network/PacketEncoder.java
++++ b/net/minecraft/network/PacketEncoder.java
+@@ -25,8 +25,7 @@ public class PacketEncoder<T extends PacketListener> extends MessageToByteEncode
+
+     private static boolean zvsInPlacePrefixEnabled() {
+         final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
+-        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
+-            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
+     }
+
+     @Override
+diff --git a/net/minecraft/network/Varint21FrameDecoder.java b/net/minecraft/network/Varint21FrameDecoder.java
+index d490a15fedab61a73e9102616f7630c7418f44e4..8deb6e1354c8aa5e0609a3d8271f3add8f61aef2 100644
+--- a/net/minecraft/network/Varint21FrameDecoder.java
++++ b/net/minecraft/network/Varint21FrameDecoder.java
+@@ -25,8 +25,7 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+
+     private static boolean zvsZeroCopyEnabled() {
+         final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
+-        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
+-            && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.zeroCopyDecoding;
+     }
+
+     @Override
+diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minecraft/network/Varint21LengthFieldPrepender.java
+index d9e8da76dfdb65b020b2b935be60ac0a76cae082..a27a34b43930c0c40c558d279ed75be60715834a 100644
+--- a/net/minecraft/network/Varint21LengthFieldPrepender.java
++++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
+@@ -22,8 +22,7 @@ public class Varint21LengthFieldPrepender extends MessageToMessageEncoder<ByteBu
+
+     private static boolean zvsInPlacePrefixEnabled() {
+         final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
+-        return configuration != null && configuration.optimizations.zvsPlayNetwork.enabled
+-            && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
++        return configuration != null && configuration.optimizations.zvsPlayNetwork.inPlaceFramePrefix;
+     }
+
+     @Override
+diff --git a/net/minecraft/network/protocol/game/ClientboundSoundEntityPacket.java b/net/minecraft/network/protocol/game/ClientboundSoundEntityPacket.java
+index 0aac1ac35e4ec576fddc95ccac901e922e73233d..7591b16fbc1c3757547a2e8e0d0cd5ca0d4befd8 100644
+--- a/net/minecraft/network/protocol/game/ClientboundSoundEntityPacket.java
++++ b/net/minecraft/network/protocol/game/ClientboundSoundEntityPacket.java
+@@ -22,14 +22,22 @@ public class ClientboundSoundEntityPacket implements Packet<ClientGamePacketList
+
+     public ClientboundSoundEntityPacket(
+         final Holder<SoundEvent> sound, final SoundSource source, final Entity sourceEntity, final float volume, final float pitch, final long seed
++    ) {
++        this(sound, source, sourceEntity.getId(), volume, pitch, seed);
++    }
++
++    // Paper start - allocation-light effect packet coalescing
++    public ClientboundSoundEntityPacket(
++        final Holder<SoundEvent> sound, final SoundSource source, final int entityId, final float volume, final float pitch, final long seed
+     ) {
+         this.sound = sound;
+         this.source = source;
+-        this.id = sourceEntity.getId();
++        this.id = entityId;
+         this.volume = volume;
+         this.pitch = pitch;
+         this.seed = seed;
+     }
++    // Paper end - allocation-light effect packet coalescing
+
+     private ClientboundSoundEntityPacket(final RegistryFriendlyByteBuf input) {
+         this.sound = SoundEvent.STREAM_CODEC.decode(input);
+diff --git a/net/minecraft/server/level/ChunkHolder.java b/net/minecraft/server/level/ChunkHolder.java
+index cd5a325d37f617431ceb568a655701601618198f..df8e40a2f8675af839b88173adc840fda3bf2500 100644
+--- a/net/minecraft/server/level/ChunkHolder.java
++++ b/net/minecraft/server/level/ChunkHolder.java
+@@ -2,6 +2,7 @@ package net.minecraft.server.level;
+
+ import it.unimi.dsi.fastutil.shorts.ShortOpenHashSet;
+ import it.unimi.dsi.fastutil.shorts.ShortSet;
++import com.mojang.logging.LogUtils;
+ import java.util.BitSet;
+ import java.util.List;
+ import java.util.concurrent.CompletableFuture;
+@@ -14,6 +15,7 @@ import net.minecraft.core.SectionPos;
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+ import net.minecraft.network.protocol.game.ClientboundLightUpdatePacket;
++import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
+ import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket;
+ import net.minecraft.util.Util;
+ import net.minecraft.world.level.ChunkPos;
+@@ -28,8 +30,10 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
+ import net.minecraft.world.level.chunk.status.ChunkStatus;
+ import net.minecraft.world.level.lighting.LevelLightEngine;
+ import org.jspecify.annotations.Nullable;
++import org.slf4j.Logger;
+
+ public class ChunkHolder extends GenerationChunkHolder implements ca.spottedleaf.moonrise.patches.chunk_system.level.chunk.ChunkSystemChunkHolder { // Paper - rewrite chunk system
++    private static final Logger LOGGER = LogUtils.getLogger();
+     public static final ChunkResult<LevelChunk> UNLOADED_LEVEL_CHUNK = ChunkResult.error("Unloaded level chunk");
+     private static final CompletableFuture<ChunkResult<LevelChunk>> UNLOADED_LEVEL_CHUNK_FUTURE = CompletableFuture.completedFuture(UNLOADED_LEVEL_CHUNK);
+     private final LevelHeightAccessor levelHeightAccessor;
+@@ -291,6 +295,49 @@ public class ChunkHolder extends GenerationChunkHolder implements ca.spottedleaf
+             if (this.hasChangedSections) {
+                 List<ServerPlayer> players = this.moonrise$getPlayers(false); // Paper - rewrite chunk system
+
++                // Paper start - ZVS mass block-update optimization
++                final io.papermc.paper.configuration.GlobalConfiguration globalConfiguration =
++                    io.papermc.paper.configuration.GlobalConfiguration.get();
++                final io.papermc.paper.configuration.GlobalConfiguration.Optimizations.ZvsPlayNetwork network =
++                    globalConfiguration == null ? null : globalConfiguration.optimizations.zvsPlayNetwork;
++                final int changedBlockCount = network == null
++                    ? 0
++                    : io.papermc.paper.optimization.zvs.network.ZvsMassBlockUpdate.countChanges(this.changedBlocksPerSection);
++                final int changedSectionCount = network == null
++                    ? 0
++                    : io.papermc.paper.optimization.zvs.network.ZvsMassBlockUpdate.countChangedSections(this.changedBlocksPerSection);
++                if (network != null
++                    && io.papermc.paper.optimization.zvs.network.ZvsMassBlockUpdate.shouldResend(
++                        network.massBlockUpdateChunkResend,
++                        network.massBlockUpdateThreshold,
++                        changedBlockCount,
++                        io.papermc.paper.optimization.zvs.network.ZvsMassBlockUpdate.estimateIncrementalBytes(
++                            changedBlockCount, changedSectionCount
++                        ),
++                        io.papermc.paper.optimization.zvs.network.ZvsMassBlockUpdate.estimateChunkSectionBytes(chunk.getSections()),
++                        network.massBlockUpdateChunkSafetyBytes
++                    )) {
++                    java.util.Arrays.fill(this.changedBlocksPerSection, null);
++                    this.hasChangedSections = false;
++                    if (!players.isEmpty()) {
++                        for (final ServerPlayer player : players) {
++                            final boolean shouldModify = level.chunkPacketBlockController.shouldModify(player, chunk);
++                            player.connection.send(new ClientboundLevelChunkWithLightPacket(
++                                chunk, this.lightEngine, null, null, shouldModify
++                            ));
++                        }
++                        io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.optimizedChunkResend(changedBlockCount);
++                        if (network.logMassBlockUpdateReplacements) {
++                            LOGGER.info(
++                                "ZVS network optimization replaced {} block updates in chunk [{}, {}] with one full chunk resend",
++                                changedBlockCount, chunk.getPos().x(), chunk.getPos().z()
++                            );
++                        }
++                    }
++                    return;
++                }
++                // Paper end - ZVS mass block-update optimization
++
+                 for (int sectionIndex = 0; sectionIndex < this.changedBlocksPerSection.length; sectionIndex++) {
+                     ShortSet changedBlocks = this.changedBlocksPerSection[sectionIndex];
+                     if (changedBlocks != null) {
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 9415a75893a81f3d312117377b03aa440479599b..4fff3be5a548cdb246c2e2bc6e566e26b3e86621 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -2022,12 +2022,31 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         // CraftBukkit end
+         ParticleOptions explosionParticle = explosion.isSmall() ? smallExplosionParticles : largeExplosionParticles;
+
+-        for (ServerPlayer player : this.players) {
++        // Paper start - restrict explosion packet scans with Moonrise's maintained nearby-player index
++        final io.papermc.paper.configuration.GlobalConfiguration configuration =
++            io.papermc.paper.configuration.GlobalConfiguration.get();
++        final boolean optimizeExplosionRecipients = configuration != null
++            && configuration.optimizations.explosionBroadcastOptimization.enabled;
++        final Iterable<ServerPlayer> explosionRecipients;
++        if (optimizeExplosionRecipients) {
++            final ca.spottedleaf.moonrise.common.list.ReferenceList<ServerPlayer> nearbyPlayers =
++                this.moonrise$getNearbyPlayers().getPlayersByBlock(
++                    Mth.floor(center.x),
++                    Mth.floor(center.z),
++                    ca.spottedleaf.moonrise.common.misc.NearbyPlayers.NearbyMapType.GENERAL_SMALL
++                );
++            explosionRecipients = nearbyPlayers == null ? java.util.List.of() : nearbyPlayers;
++        } else {
++            explosionRecipients = this.players;
++        }
++
++        for (ServerPlayer player : explosionRecipients) {
+             if (player.distanceToSqr(center) < 4096.0) {
+                 Optional<Vec3> playerKnockback = Optional.ofNullable(explosion.getHitPlayers().get(player));
+                 player.connection.send(new ClientboundExplodePacket(center, r, blockCount, playerKnockback, explosionParticle, explosionSound, blockParticles));
+             }
+         }
++        // Paper end - restrict explosion packet scans with Moonrise's maintained nearby-player index
+
+         return explosion; // CraftBukkit
+     }
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 0517b79de82c9e7be848874e8ec691b651ec2f0c..a28b26ad6d8736c26d87629125038b8450af5e86 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1472,13 +1472,13 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 return false;
+             }
+
+-            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesTrustedFastPath(this)) {
++            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesAllocationLightFastPath(this)) {
+                 final ZvsTrustedDamage trusted = this.computeZvsTrustedDamage(source, damage, this.lastHurt);
+                 damage = trusted.cooldownDamage();
+                 if (!this.actuallyHurtZvsTrusted(level, source, trusted)) {
+                     return false;
+                 }
+-                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordTrustedEventSkipped(this);
++                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordAllocationLightFastPath(this);
+             } else {
+                 // Paper start - only call damage event when actuallyHurt will be called - move call logic down
+                 final EntityDamageEvent event = this.handleEntityDamage(source, damage, this.lastHurt); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction
+@@ -1494,13 +1494,13 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             this.lastHurt = damage;
+             tookFullDamage = false;
+         } else {
+-            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesTrustedFastPath(this)) {
++            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesAllocationLightFastPath(this)) {
+                 final ZvsTrustedDamage trusted = this.computeZvsTrustedDamage(source, damage, 0.0F);
+                 damage = trusted.cooldownDamage();
+                 if (!this.actuallyHurtZvsTrusted(level, source, trusted)) {
+                     return false;
+                 }
+-                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordTrustedEventSkipped(this);
++                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordAllocationLightFastPath(this);
+             } else {
+                 // Paper start - only call damage event when actuallyHurt will be called - move call logic down
+                 final EntityDamageEvent event = this.handleEntityDamage(source, damage, 0); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction (none in this branch)

@@ -3,10 +3,10 @@ package io.papermc.paper.optimization.pathfinding;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import io.papermc.paper.configuration.GlobalConfiguration;
 import io.papermc.paper.optimization.pathfinding.ZvsPathfindingMetrics.RejectionReason;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -65,7 +65,7 @@ public final class PatheticMobPathfinding {
             return SearchResult.NOT_HANDLED;
         }
         if (!mob.entityTags().contains(configuration.markerTag)) {
-            ZvsPathfindingMetrics.reject(RejectionReason.MARKER_TAG);
+            ZvsPathfindingMetrics.reject(configuration.metricsEnabled, RejectionReason.MARKER_TAG);
             return SearchResult.NOT_HANDLED;
         }
 
@@ -73,7 +73,7 @@ public final class PatheticMobPathfinding {
             nodeEvaluator, start, targets, maxRange, accuracy
         );
         if (rejectionReason != null) {
-            ZvsPathfindingMetrics.reject(rejectionReason);
+            ZvsPathfindingMetrics.reject(configuration.metricsEnabled, rejectionReason);
             return SearchResult.NOT_HANDLED;
         }
 
@@ -82,12 +82,15 @@ public final class PatheticMobPathfinding {
         final int maxPathLength = Math.max(1, (int) Math.ceil(maxRange));
         final int evaluationBudget = patheticEvaluationBudget(maxVisitedNodes, searchDepthMultiplier);
         if (evaluationBudget < 1) {
-            ZvsPathfindingMetrics.reject(RejectionReason.EVALUATION_BUDGET);
+            ZvsPathfindingMetrics.reject(configuration.metricsEnabled, RejectionReason.EVALUATION_BUDGET);
             return SearchResult.NOT_HANDLED;
         }
-        ZvsPathfindingMetrics.attempt();
+        ZvsPathfindingMetrics.attempt(configuration.metricsEnabled);
         final WalkNodeEvaluator walkNodeEvaluator = (WalkNodeEvaluator) nodeEvaluator;
-        final ZvsSharedPathCache.PathProfile pathProfile = ZvsSharedPathCache.profile(mob, walkNodeEvaluator);
+        final double floorLevel = WalkNodeEvaluator.getFloorLevel(region, start.asBlockPos());
+        final ZvsSharedPathCache.PathProfile pathProfile = ZvsSharedPathCache.profile(
+            mob, walkNodeEvaluator, floorLevel
+        );
         final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
         final Path path = findGroundPath(
             region,
@@ -100,7 +103,10 @@ public final class PatheticMobPathfinding {
             accuracy,
             maxRange,
             maxPathLength,
-            evaluationBudget
+            evaluationBudget,
+            configuration.sharedCellCacheEntries,
+            floorLevel,
+            configuration.metricsEnabled
         );
         return SearchResult.handled(path);
     }
@@ -182,15 +188,21 @@ public final class PatheticMobPathfinding {
         final int accuracy,
         final float maxRange,
         final int maxPathLength,
-        final int evaluationBudget
+        final int evaluationBudget,
+        final int sharedCellCacheEntries,
+        final double floorLevel,
+        final boolean metricsEnabled
     ) {
         final PatheticEnvironmentContext context = new PatheticEnvironmentContext(
-            region, mob, nodeEvaluator, pathfindingContext, start, evaluationBudget
+            region, mob, nodeEvaluator, pathfindingContext, floorLevel,
+            new PatheticEvaluationBudget(evaluationBudget), metricsEnabled
         );
-        final PatheticNavigationPointProvider provider = new PatheticNavigationPointProvider();
+        final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
+        final PatheticNavigationPointProvider provider = new PatheticNavigationPointProvider(
+            sharedPathCache.sharedCells(pathProfile, sharedCellCacheEntries, metricsEnabled)
+        );
         provider.seed(start);
         final List<BlockPos> endpoints = targetCandidates(start, target, accuracy);
-        final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
         final Path flowFieldPath = sharedPathCache.findFlowField(
             pathProfile, start, target, accuracy, maxRange, maxPathLength
         );
@@ -240,9 +252,7 @@ public final class PatheticMobPathfinding {
                 ? ZvsPathfindingMetrics.Result.ASTAR
                 : ZvsPathfindingMetrics.Result.PARTIAL;
             recordResult(result, context);
-            if (path.canReach()) {
-                sharedPathCache.recordFlowField(pathProfile, path, accuracy, maxRange);
-            }
+            sharedPathCache.recordFlowField(pathProfile, path, accuracy, maxRange);
             return path;
         }
         recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
@@ -271,6 +281,7 @@ public final class PatheticMobPathfinding {
         final PatheticEnvironmentContext context
     ) {
         ZvsPathfindingMetrics.result(
+            context.metricsEnabled(),
             result,
             context.evaluationBudget().consumed(),
             context.evaluationBudget().exhausted()
@@ -294,7 +305,7 @@ public final class PatheticMobPathfinding {
         final PriorityQueue<AStarNode> frontier = new PriorityQueue<>(
             Comparator.comparingDouble(AStarNode::score).thenComparingInt(AStarNode::heuristic)
         );
-        final HashMap<Long, AStarNode> bestByPosition = new HashMap<>();
+        final Long2ObjectOpenHashMap<AStarNode> bestByPosition = new Long2ObjectOpenHashMap<>(256);
         final int startHeuristic = horizontalHeuristic(start.x, start.z, target, accuracy);
         final AStarNode startNode = new AStarNode(
             start.asBlockPos().asLong(), start.x, start.y, start.z, 0.0D, startHeuristic, 0, null,
@@ -326,9 +337,7 @@ public final class PatheticMobPathfinding {
                 if (steps >= maxRange) {
                     continue;
                 }
-                final PatheticNavigationPoint point = provider.pointAt(
-                    PathPosition.of(x, current.y(), z), context
-                );
+                final PatheticNavigationPoint point = provider.pointAt(x, current.y(), z, context);
                 if (!point.isTraversable()) {
                     if (context.evaluationBudget().exhausted()) {
                         break search;
@@ -421,7 +430,7 @@ public final class PatheticMobPathfinding {
         for (int i = 1; i <= steps; i++) {
             final int x = start.x + Math.round((float) deltaX * (float) i / (float) steps);
             final int z = start.z + Math.round((float) deltaZ * (float) i / (float) steps);
-            final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(x, start.y, z), context);
+            final PatheticNavigationPoint point = provider.pointAt(x, start.y, z, context);
             if (!isZeroCost(point)) {
                 return partialPath(nodes, pathTarget);
             }
@@ -456,7 +465,7 @@ public final class PatheticMobPathfinding {
         final int y,
         final int z
     ) {
-        final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(x, y, z), context);
+        final PatheticNavigationPoint point = provider.pointAt(x, y, z, context);
         return isZeroCost(point) && point.pathType() != PathType.WALKABLE_DOOR;
     }
 
@@ -627,7 +636,7 @@ public final class PatheticMobPathfinding {
         for (int i = 1; i <= steps; i++) {
             final int x = from.getX() + deltaX * i;
             final int z = from.getZ() + deltaZ * i;
-            final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(x, from.getY(), z), context);
+            final PatheticNavigationPoint point = provider.pointAt(x, from.getY(), z, context);
             if (!isZeroCost(point)) {
                 return null;
             }

@@ -15,8 +15,20 @@ record PatheticEnvironmentContext(
     WalkNodeEvaluator nodeEvaluator,
     PathfindingContext pathfindingContext,
     double floorLevel,
-    PatheticEvaluationBudget evaluationBudget
+    PatheticEvaluationBudget evaluationBudget,
+    boolean metricsEnabled
 ) implements EnvironmentContext {
+    PatheticEnvironmentContext(
+        final PathNavigationRegion region,
+        final Mob mob,
+        final WalkNodeEvaluator nodeEvaluator,
+        final PathfindingContext pathfindingContext,
+        final double floorLevel,
+        final PatheticEvaluationBudget evaluationBudget
+    ) {
+        this(region, mob, nodeEvaluator, pathfindingContext, floorLevel, evaluationBudget, true);
+    }
+
     PatheticEnvironmentContext(
         final PathNavigationRegion region,
         final Mob mob,
@@ -31,7 +43,8 @@ record PatheticEnvironmentContext(
             nodeEvaluator,
             pathfindingContext,
             WalkNodeEvaluator.getFloorLevel(region, start.asBlockPos()),
-            new PatheticEvaluationBudget(evaluationBudget)
+            new PatheticEvaluationBudget(evaluationBudget),
+            true
         );
     }
 }

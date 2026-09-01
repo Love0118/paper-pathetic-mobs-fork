@@ -16,9 +16,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * Explicit, server-internal bridge for trusted ZVS programmatic damage.
  *
- * <p>The bridge is deliberately absent from the Paper API. A plugin may detect
- * and invoke it reflectively, while stock Paper keeps using the Bukkit damage
- * methods. Calls are accepted only on the primary tick thread and only for a
+ * <p>The bridge is exposed through the versioned internal Paper API while stock
+ * Paper keeps using the Bukkit damage methods. Calls are accepted only on the
+ * primary tick thread and only for a
  * target carrying the configured scoreboard marker. Armor, enchantments,
  * resistance, absorption, attribution, invulnerability and death are still
  * processed by {@code LivingEntity#hurtServer} in request order.</p>
@@ -37,7 +37,8 @@ public final class ZvsManagedDamage {
     private static final Map<Entity, Boolean> HURT_STATUS_THIS_TICK = new IdentityHashMap<>();
     private static int eventTick = Integer.MIN_VALUE;
     private static int hurtStatusTick = Integer.MIN_VALUE;
-    private static boolean nonCompatibilityWarningLogged;
+    private static volatile boolean nonCompatibilityWarningLogged;
+    private static boolean metricsForTesting;
 
     private static final LongAdder BATCHES = new LongAdder();
     private static final LongAdder REQUESTS = new LongAdder();
@@ -60,8 +61,12 @@ public final class ZvsManagedDamage {
         final double amount,
         final @Nullable DamageSource source
     ) {
-        BATCHES.increment();
-        return apply(target, amount, source);
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration = configuration();
+        final boolean metricsEnabled = configuration.metricsEnabled || metricsForTesting;
+        if (metricsEnabled) {
+            BATCHES.increment();
+        }
+        return apply(target, amount, source, configuration, configuredMode(configuration), metricsEnabled);
     }
 
     /**
@@ -76,10 +81,18 @@ public final class ZvsManagedDamage {
         if (targets.length != amounts.length || (sources != null && sources.length != targets.length)) {
             throw new IllegalArgumentException("Managed damage arrays must have equal lengths");
         }
-        BATCHES.increment();
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration = configuration();
+        final EventMode mode = configuredMode(configuration);
+        final boolean metricsEnabled = configuration.metricsEnabled || metricsForTesting;
+        if (metricsEnabled) {
+            BATCHES.increment();
+        }
         final double[] applied = new double[targets.length];
         for (int index = 0; index < targets.length; index++) {
-            applied[index] = apply(targets[index], amounts[index], sources == null ? null : sources[index]);
+            applied[index] = apply(
+                targets[index], amounts[index], sources == null ? null : sources[index],
+                configuration, mode, metricsEnabled
+            );
         }
         return applied;
     }
@@ -87,19 +100,25 @@ public final class ZvsManagedDamage {
     private static double apply(
         final LivingEntity target,
         final double amount,
-        final @Nullable DamageSource source
+        final @Nullable DamageSource source,
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration,
+        final EventMode mode,
+        final boolean metricsEnabled
     ) {
-        REQUESTS.increment();
-        if (!eligible(target, amount)) {
-            REJECTED.increment();
+        if (metricsEnabled) {
+            REQUESTS.increment();
+        }
+        if (!eligible(target, amount, configuration)) {
+            if (metricsEnabled) {
+                REJECTED.increment();
+            }
             return Double.NaN;
         }
 
         final double before = effectiveHealth(target);
-        final EventMode mode = configuredMode();
         warnForSuppressedGlobalEvents(mode);
         final Context previous = CURRENT.get();
-        CURRENT.set(new Context(target, mode));
+        CURRENT.set(new Context(target, mode, metricsEnabled));
         try {
             if (source == null) {
                 target.damage(amount);
@@ -113,13 +132,17 @@ public final class ZvsManagedDamage {
                 CURRENT.set(previous);
             }
         }
-        APPLIED.increment();
+        if (metricsEnabled) {
+            APPLIED.increment();
+        }
         return Math.max(0.0D, before - effectiveHealth(target));
     }
 
-    private static boolean eligible(final LivingEntity target, final double amount) {
-        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration =
-            GlobalConfiguration.get().optimizations.zvsManagedDamage;
+    private static boolean eligible(
+        final LivingEntity target,
+        final double amount,
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration
+    ) {
         return configuration.enabled
             && Bukkit.isPrimaryThread()
             && Double.isFinite(amount)
@@ -134,8 +157,10 @@ public final class ZvsManagedDamage {
         return Math.max(0.0D, target.getHealth()) + Math.max(0.0D, target.getAbsorptionAmount());
     }
 
-    private static EventMode configuredMode() {
-        final String configured = GlobalConfiguration.get().optimizations.zvsManagedDamage.eventMode;
+    private static EventMode configuredMode(
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration
+    ) {
+        final String configured = configuration.eventMode;
         if (configured == null) {
             return EventMode.COMPATIBILITY;
         }
@@ -146,16 +171,21 @@ public final class ZvsManagedDamage {
         }
     }
 
-    private static synchronized void warnForSuppressedGlobalEvents(final EventMode mode) {
+    private static void warnForSuppressedGlobalEvents(final EventMode mode) {
         if (mode == EventMode.COMPATIBILITY || nonCompatibilityWarningLogged) {
             return;
         }
-        nonCompatibilityWarningLogged = true;
-        Bukkit.getLogger().warning(
-            "ZVS managed damage event-mode=" + mode.name().toLowerCase(Locale.ROOT)
-                + " suppresses some global EntityDamageEvent notifications for zvs_managed targets; "
-                + "anti-cheat, protection and logging plugins will not observe those suppressed hits."
-        );
+        synchronized (ZvsManagedDamage.class) {
+            if (nonCompatibilityWarningLogged) {
+                return;
+            }
+            nonCompatibilityWarningLogged = true;
+            Bukkit.getLogger().warning(
+                "ZVS managed damage event-mode=" + mode.name().toLowerCase(Locale.ROOT)
+                    + " suppresses some global EntityDamageEvent notifications for zvs_managed targets; "
+                    + "anti-cheat, protection and logging plugins will not observe those suppressed hits."
+            );
+        }
     }
 
     /** Called by the CraftBukkit event bridge for an already-created damage event. */
@@ -164,26 +194,50 @@ public final class ZvsManagedDamage {
         if (context == null || context.target().getEntityId() != damagee.getId()) {
             return true;
         }
-        if (context.mode() == EventMode.COMPATIBILITY) {
-            EVENTS_DISPATCHED.increment();
-            return true;
-        }
-        if (context.mode() == EventMode.TRUSTED) {
-            EVENTS_SKIPPED.increment();
-            return false;
+        return decideDamageEvent(context, damagee);
+    }
+
+    /**
+     * Called before CraftBukkit constructs modifier maps or an event object.
+     * Hybrid mode reserves the first event per target/tick and uses the trusted
+     * arithmetic path for later managed hits in that same tick.
+     */
+    public static boolean usesAllocationLightFastPath(final Entity damagee) {
+        final Context context = CURRENT.get();
+        return context != null
+            && context.target().getEntityId() == damagee.getId()
+            && !decideDamageEvent(context, damagee);
+    }
+
+    private static boolean decideDamageEvent(final Context context, final Entity damagee) {
+        if (context.damageEventDecisionMade) {
+            return context.dispatchDamageEvent;
         }
 
-        final int tick = MinecraftServer.currentTick;
-        if (eventTick != tick) {
-            eventTick = tick;
-            EVENTS_THIS_TICK.clear();
+        final boolean dispatch;
+        if (context.mode() == EventMode.COMPATIBILITY) {
+            dispatch = true;
+        } else if (context.mode() == EventMode.TRUSTED) {
+            dispatch = false;
+        } else {
+            final int tick = MinecraftServer.currentTick;
+            if (eventTick != tick) {
+                eventTick = tick;
+                EVENTS_THIS_TICK.clear();
+            }
+            dispatch = EVENTS_THIS_TICK.put(damagee, Boolean.TRUE) == null;
         }
-        if (EVENTS_THIS_TICK.put(damagee, Boolean.TRUE) == null) {
-            EVENTS_DISPATCHED.increment();
-            return true;
+
+        context.damageEventDecisionMade = true;
+        context.dispatchDamageEvent = dispatch;
+        if (context.metricsEnabled()) {
+            if (dispatch) {
+                EVENTS_DISPATCHED.increment();
+            } else {
+                EVENTS_SKIPPED.increment();
+            }
         }
-        EVENTS_SKIPPED.increment();
-        return false;
+        return dispatch;
     }
 
     /** Called immediately before the managed damage-status packet is broadcast. */
@@ -203,7 +257,9 @@ public final class ZvsManagedDamage {
         if (HURT_STATUS_THIS_TICK.put(damagee, Boolean.TRUE) == null) {
             return true;
         }
-        HURT_STATUS_SKIPPED.increment();
+        if (context.metricsEnabled()) {
+            HURT_STATUS_SKIPPED.increment();
+        }
         return false;
     }
 
@@ -214,11 +270,14 @@ public final class ZvsManagedDamage {
             && context.target().getEntityId() == entity.getId();
     }
 
-    public static void recordTrustedEventSkipped(final Entity entity) {
-        if (!usesTrustedFastPath(entity)) {
-            throw new IllegalStateException("Trusted damage fast path used outside its managed context");
+    public static void recordAllocationLightFastPath(final Entity entity) {
+        final Context context = CURRENT.get();
+        if (context == null
+            || context.target().getEntityId() != entity.getId()
+            || !context.damageEventDecisionMade
+            || context.dispatchDamageEvent) {
+            throw new IllegalStateException("Managed damage fast path used without a reserved event skip");
         }
-        EVENTS_SKIPPED.increment();
     }
 
     public static Snapshot snapshot() {
@@ -246,10 +305,38 @@ public final class ZvsManagedDamage {
         eventTick = Integer.MIN_VALUE;
         hurtStatusTick = Integer.MIN_VALUE;
         nonCompatibilityWarningLogged = false;
+        metricsForTesting = true;
         CURRENT.remove();
     }
 
-    private record Context(LivingEntity target, EventMode mode) {
+    private static GlobalConfiguration.Optimizations.ZvsManagedDamage configuration() {
+        return GlobalConfiguration.get().optimizations.zvsManagedDamage;
+    }
+
+    private static final class Context {
+        private final LivingEntity target;
+        private final EventMode mode;
+        private final boolean metricsEnabled;
+        private boolean damageEventDecisionMade;
+        private boolean dispatchDamageEvent;
+
+        private Context(final LivingEntity target, final EventMode mode, final boolean metricsEnabled) {
+            this.target = target;
+            this.mode = mode;
+            this.metricsEnabled = metricsEnabled;
+        }
+
+        LivingEntity target() {
+            return this.target;
+        }
+
+        EventMode mode() {
+            return this.mode;
+        }
+
+        boolean metricsEnabled() {
+            return this.metricsEnabled;
+        }
     }
 
     public record Snapshot(

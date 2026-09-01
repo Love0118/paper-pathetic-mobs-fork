@@ -1,12 +1,16 @@
 package io.papermc.paper.optimization.pathfinding;
 
+import de.bsommerfeld.pathetic.api.pathing.processing.Cost;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.PathNavigationRegion;
 import net.minecraft.world.level.pathfinder.AmphibiousNodeEvaluator;
@@ -22,8 +26,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @Normal
 class PatheticMobPathfindingTest {
@@ -262,27 +271,115 @@ class PatheticMobPathfindingTest {
     }
 
     @Test
+    void sharedCellCacheReusesEvaluationUntilARelevantSectionChanges() {
+        final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final ZvsSharedPathCache.SharedCellCache cells = cache.sharedCells(ZvsSharedPathCache.syntheticProfile(31), 16);
+        final long position = BlockPos.asLong(1, 64, 1);
+        final PatheticNavigationPoint point = new PatheticNavigationPoint(true, Cost.ZERO, PathType.WALKABLE, 0.0F);
+
+        cells.record(position, point);
+        assertSame(point, cells.find(position));
+
+        cache.invalidate(new BlockPos(200, 64, 200));
+        assertSame(point, cells.find(position));
+
+        cache.invalidate(new BlockPos(1, 64, 1));
+        assertNull(cells.find(position));
+    }
+
+    @Test
+    void sharedCellCacheUsesABoundedGeneration() {
+        final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final ZvsSharedPathCache.SharedCellCache cells = cache.sharedCells(ZvsSharedPathCache.syntheticProfile(32), 1);
+        final PatheticNavigationPoint point = new PatheticNavigationPoint(true, Cost.ZERO, PathType.WALKABLE, 0.0F);
+        final long first = BlockPos.asLong(1, 64, 1);
+        final long second = BlockPos.asLong(2, 64, 2);
+
+        cells.record(first, point);
+        cells.record(second, point);
+
+        assertNull(cells.find(first));
+        assertSame(point, cells.find(second));
+    }
+
+    @Test
+    void structuralProfileIsReusedAndInvalidatedByFloorOrMalusRevision() {
+        final Mob mob = mock(Mob.class);
+        final AtomicReference<Object> cached = new AtomicReference<>();
+        final AtomicInteger revision = new AtomicInteger();
+        when(mob.getType()).thenReturn(mock(EntityType.class));
+        when(mob.getBbWidth()).thenReturn(0.6F);
+        when(mob.getBbHeight()).thenReturn(1.95F);
+        when(mob.zvsPathfindingMalusRevision()).thenAnswer(ignored -> revision.get());
+        when(mob.zvsPathProfileCache()).thenAnswer(ignored -> cached.get());
+        doAnswer(invocation -> {
+            cached.set(invocation.getArgument(0));
+            return null;
+        }).when(mob).zvsPathProfileCache(any());
+        final WalkNodeEvaluator evaluator = new WalkNodeEvaluator();
+
+        final ZvsSharedPathCache.PathProfile first = ZvsSharedPathCache.profile(mob, evaluator, 64.0D);
+        assertSame(first, ZvsSharedPathCache.profile(mob, evaluator, 64.0D));
+        assertNotSame(first, ZvsSharedPathCache.profile(mob, evaluator, 64.5D));
+        revision.incrementAndGet();
+        assertNotSame(first, ZvsSharedPathCache.profile(mob, evaluator, 64.0D));
+    }
+
+    @Test
     void reverseFlowFieldBuildsAnOrderedSuffixAndRejectsCycles() {
         final BlockPos target = new BlockPos(2, 64, 0);
         final long startPosition = BlockPos.asLong(0, 64, 0);
         final long middlePosition = BlockPos.asLong(1, 64, 0);
         final long targetPosition = target.asLong();
         final ZvsReverseFlowFieldCache.FlowField field = new ZvsReverseFlowFieldCache.FlowField(Map.of(
-            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F),
-            middlePosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 1.0D, PathType.WALKABLE, 0.0F),
-            targetPosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 0.0D, PathType.WALKABLE, 0.0F)
+            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F, false),
+            middlePosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 1.0D, PathType.WALKABLE, 0.0F, false),
+            targetPosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 0.0D, PathType.WALKABLE, 0.0F, true)
         ));
 
         final net.minecraft.world.level.pathfinder.Path path = field.toPath(walkableNode(0, 64, 0), target, 8.0F, 8);
         assertNotNull(path);
         assertEquals(3, path.getNodeCount());
         assertEquals(target, path.getEndNode().asBlockPos());
+        assertTrue(path.canReach());
+
+        final ZvsReverseFlowFieldCache.FlowField partial = new ZvsReverseFlowFieldCache.FlowField(Map.of(
+            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 1.0D, PathType.WALKABLE, 0.0F, false),
+            middlePosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 0.0D, PathType.WALKABLE, 0.0F, false)
+        ));
+        final net.minecraft.world.level.pathfinder.Path partialPath = partial.toPath(
+            walkableNode(0, 64, 0), target, 8.0F, 8
+        );
+        assertNotNull(partialPath);
+        assertFalse(partialPath.canReach());
 
         final ZvsReverseFlowFieldCache.FlowField cycle = new ZvsReverseFlowFieldCache.FlowField(Map.of(
-            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F),
-            middlePosition, new ZvsReverseFlowFieldCache.Cell(startPosition, 1.0D, PathType.WALKABLE, 0.0F)
+            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F, false),
+            middlePosition, new ZvsReverseFlowFieldCache.Cell(startPosition, 1.0D, PathType.WALKABLE, 0.0F, false)
         ));
         assertNull(cycle.toPath(walkableNode(0, 64, 0), target, 8.0F, 8));
+    }
+
+    @Test
+    void reverseFlowFieldSeparatesDemandAcrossCallerRangeLimits() {
+        final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final ZvsSharedPathCache.PathProfile profile = ZvsSharedPathCache.syntheticProfile(41);
+        final BlockPos target = new BlockPos(2, 64, 0);
+        final Node start = walkableNode(0, 64, 0);
+        for (int request = 0; request < 4; request++) {
+            assertNull(cache.findFlowField(profile, start, target, 0, 12.0F, 12));
+        }
+        cache.recordFlowField(
+            profile,
+            new net.minecraft.world.level.pathfinder.Path(
+                List.of(start, walkableNode(1, 64, 0), walkableNode(2, 64, 0)), target, true
+            ),
+            0,
+            12.0F
+        );
+
+        assertNull(cache.findFlowField(profile, start, target, 0, 8.0F, 8));
+        assertNotNull(cache.findFlowField(profile, start, target, 0, 12.0F, 12));
     }
 
     @Test

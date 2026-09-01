@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 02:26:17 +0900
+Subject: [PATCH] Optimize managed mob AI and path profiles
+
+
+diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
+index c2dd2da4bfb7d65ad2730ba1ce771e2b488beda4..4d605c6d89cbf36dc8e670cf3a2afbfd6a512b50 100644
+--- a/net/minecraft/world/entity/Mob.java
++++ b/net/minecraft/world/entity/Mob.java
+@@ -148,6 +148,8 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+     private boolean canPickUpLoot = false;
+     public boolean persistenceRequired = false;
+     private final Map<PathType, Float> pathfindingMalus = Maps.newEnumMap(PathType.class);
++    private int zvsPathfindingMalusRevision; // Paper - invalidate cached structural 2D path profiles
++    private @Nullable Object zvsPathProfileCache; // Paper - opaque cache owned by the ZVS pathfinder
+     public Optional<ResourceKey<LootTable>> lootTable = Optional.empty();
+     public long lootTableSeed;
+     private Leashable.@Nullable LeashData leashData;
+@@ -199,8 +201,24 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+
+     public void setPathfindingMalus(final PathType pathType, final float cost) {
+         this.pathfindingMalus.put(pathType, cost);
++        this.zvsPathfindingMalusRevision++;
++        this.zvsPathProfileCache = null;
+     }
+
++    // Paper start - allocation-light structural 2D path profile cache
++    public int zvsPathfindingMalusRevision() {
++        return this.zvsPathfindingMalusRevision;
++    }
++
++    public @Nullable Object zvsPathProfileCache() {
++        return this.zvsPathProfileCache;
++    }
++
++    public void zvsPathProfileCache(final @Nullable Object cache) {
++        this.zvsPathProfileCache = cache;
++    }
++    // Paper end - allocation-light structural 2D path profile cache
++
+     public void onPathfindingStart() {
+     }
+
+@@ -819,25 +837,30 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+         }
+         // Paper end - Allow nerfed mobs to jump and float
+         ProfilerFiller profiler = Profiler.get();
+-        profiler.push("sensing");
+-        this.sensing.tick();
+-        profiler.pop();
+-        int idBasedTickCount = this.tickCount + this.getId();
+-        if (idBasedTickCount % 2 != 0 && this.tickCount > 1) {
+-            profiler.push("targetSelector");
+-            this.targetSelector.tickRunningGoals(false);
+-            profiler.pop();
+-            profiler.push("goalSelector");
+-            this.goalSelector.tickRunningGoals(false);
+-            profiler.pop();
+-        } else {
+-            profiler.push("targetSelector");
+-            this.targetSelector.tick();
+-            profiler.pop();
+-            profiler.push("goalSelector");
+-            this.goalSelector.tick();
++        // Paper start - tag-gated ZVS managed mob AI cadence
++        final boolean zvsThrottleSelectors = io.papermc.paper.optimization.zvs.ZvsManagedMobAi.shouldThrottleSelectors(this);
++        if (!zvsThrottleSelectors || io.papermc.paper.optimization.zvs.ZvsManagedMobAi.shouldRunThrottledSelectors(this)) {
++            profiler.push("sensing");
++            this.sensing.tick();
+             profiler.pop();
++            int idBasedTickCount = this.tickCount + this.getId();
++            if (!zvsThrottleSelectors && idBasedTickCount % 2 != 0 && this.tickCount > 1) {
++                profiler.push("targetSelector");
++                this.targetSelector.tickRunningGoals(false);
++                profiler.pop();
++                profiler.push("goalSelector");
++                this.goalSelector.tickRunningGoals(false);
++                profiler.pop();
++            } else {
++                profiler.push("targetSelector");
++                this.targetSelector.tick();
++                profiler.pop();
++                profiler.push("goalSelector");
++                this.goalSelector.tick();
++                profiler.pop();
++            }
+         }
++        // Paper end - tag-gated ZVS managed mob AI cadence
+
+         profiler.push("navigation");
+         this.navigation.tick();

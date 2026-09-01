@@ -22,6 +22,15 @@ final class PatheticNavigationPointProvider implements NavigationPointProvider {
 
     private final Long2ObjectOpenHashMap<PatheticNavigationPoint> cache = new Long2ObjectOpenHashMap<>(256);
     private final BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
+    private final ZvsSharedPathCache.@org.jspecify.annotations.Nullable SharedCellCache sharedCells;
+
+    PatheticNavigationPointProvider() {
+        this.sharedCells = null;
+    }
+
+    PatheticNavigationPointProvider(final ZvsSharedPathCache.SharedCellCache sharedCells) {
+        this.sharedCells = sharedCells;
+    }
 
     @Override
     public NavigationPoint getNavigationPoint(final PathPosition pathPosition, final EnvironmentContext environmentContext) {
@@ -37,13 +46,28 @@ final class PatheticNavigationPointProvider implements NavigationPointProvider {
     }
 
     PatheticNavigationPoint pointAt(final PathPosition pathPosition, final PatheticEnvironmentContext context) {
-        final int x = pathPosition.getFlooredX();
-        final int y = pathPosition.getFlooredY();
-        final int z = pathPosition.getFlooredZ();
+        return this.pointAt(
+            pathPosition.getFlooredX(), pathPosition.getFlooredY(), pathPosition.getFlooredZ(), context
+        );
+    }
+
+    PatheticNavigationPoint pointAt(
+        final int x,
+        final int y,
+        final int z,
+        final PatheticEnvironmentContext context
+    ) {
         final long key = BlockPos.asLong(x, y, z);
         final PatheticNavigationPoint cached = this.cache.get(key);
         if (cached != null) {
             return cached;
+        }
+        if (this.sharedCells != null) {
+            final PatheticNavigationPoint shared = this.sharedCells.find(key);
+            if (shared != null) {
+                this.cache.put(key, shared);
+                return shared;
+            }
         }
         if (!context.evaluationBudget().tryConsume()) {
             return BUDGET_EXHAUSTED;
@@ -51,6 +75,9 @@ final class PatheticNavigationPointProvider implements NavigationPointProvider {
 
         final PatheticNavigationPoint point = this.evaluate(context, x, y, z);
         this.cache.put(key, point);
+        if (this.sharedCells != null) {
+            this.sharedCells.record(key, point);
+        }
         return point;
     }
 

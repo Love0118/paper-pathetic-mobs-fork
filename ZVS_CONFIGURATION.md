@@ -1,70 +1,113 @@
 # ZVS optimization configuration
 
-All server options are under `optimizations` in `config/paper-global.yml`.
-They are read at startup; restart after changing them. The defaults below are
-the beta defaults used to build the candidate jar.
+All server options are under `optimizations` in `config/paper-global.yml` and
+are read at startup. Restart after changing them. These are beta-workload
+defaults, not claims that the remaining multiplayer release gates have passed.
 
 ## `pathetic-mob-pathfinding`
 
 - `enabled: true`
 - `marker-tag: zvs_managed`
+- `metrics-enabled: false`
 - `reverse-flow-field-build-after-requests: 4`
-- `reverse-flow-field-max-cells: 4096`
-- `reverse-flow-field-cache-entries: 64`
+- `reverse-flow-field-max-cells: 16384`
+- `reverse-flow-field-cache-entries: 16`
+- `shared-cell-cache-entries: 65536`
 
-Only tagged, exact flat `WalkNodeEvaluator` requests use the 2D engine. Unsupported
-terrain, vertical movement, fluids, other evaluators, and pre-evaluation
-rejections use upstream Paper. Once 2D evaluates the world, its bounded result
-is authoritative; vanilla is not run a second time. A blocked search returns
-the closest discovered node as `reached=false`, matching vanilla partial-path
-behavior. Successful fixed-objective routes merge into one reverse next-hop
-field without a synchronous Dijkstra build or a duplicate suffix cache. Block
-changes invalidate only overlapping dependency sections.
+Only tagged, exact flat `WalkNodeEvaluator` requests use the 2D engine.
+Unsupported terrain, vertical movement, fluids, other evaluators, and
+pre-evaluation rejections use upstream Paper. Once 2D evaluates the world, its
+bounded result is authoritative and vanilla is not run a second time. A blocked
+search returns the closest discovered node as `reached=false`. Successful and
+partial fixed-objective routes merge incrementally into one reverse next-hop
+field without a second synchronous Dijkstra build, full-map copying, or a
+duplicate suffix cache. Partial terminals retain `reached=false`, use remaining
+target distance as their gradient, and are isolated by caller range. Evaluated
+cells are shared by structural mob profile and invalidated by overlapping
+section revisions. Metrics are off by default to avoid hot-path counters.
 
 ## `zvs-managed-damage`
 
 - `enabled: true`
 - `marker-tag: zvs_managed`
-- `event-mode: compatibility`
+- `event-mode: hybrid`
 - `coalesce-hurt-status: true`
 - `trusted-spawn-events: true`
 - `trusted-death-handler: true`
+- `metrics-enabled: false`
 
-`compatibility` dispatches normal Bukkit events. `hybrid` dispatches the first
-managed damage event per target/tick. `trusted` skips managed damage events and
-uses the owner-checked registered plugin death handler. Trusted hits bypass
-damage-event and modifier-map allocation after vanilla damage modifiers have
-been calculated. Only main-thread calls for tagged
-entities enter this path; all other calls fall back to Bukkit. Use `trusted`
-only when every plugin that relies on per-hit Bukkit events has been audited;
-the server logs a warning when suppression is first used. The versioned
-`@ApiStatus.Internal` contract is `io.papermc.paper.zvs.ZvsOptimization`
+`compatibility` dispatches every Bukkit damage event. `hybrid` dispatches the
+first managed damage event per target/tick and sends later same-tick managed
+hits through the allocation-light arithmetic path. `trusted` uses that path for
+every managed hit. The fast path avoids modifier maps, modifier functions, and
+`EntityDamageEvent` allocation while retaining armor, magic, resistance,
+absorption, durability, attribution, invulnerability, and death processing.
+
+Hybrid and trusted modes intentionally suppress some global event-bus
+observations. The server logs a warning on first use. Use `compatibility` if an
+anti-cheat, protection, logging, or combat plugin must inspect every hit. Only
+main-thread bridge calls for tagged entities are eligible; every other call
+falls back to Bukkit. Trusted death dispatch uses an owner-checked handler. The
+versioned internal API is `io.papermc.paper.zvs.ZvsOptimization`
 (`API_VERSION = 2`).
+
+## `zvs-managed-mob-ai`
+
+- `enabled: true`
+- `marker-tag: zvs_managed`
+- `full-rate-tag: zvs_ai_full`
+- `selector-interval: 4`
+- `full-rate-target-distance: 12.0`
+
+For tagged mobs without a nearby live target, sensing, target-selector, and
+goal-selector work is phased so each mob runs it every fourth tick. Navigation,
+movement, look, jump, and custom AI still tick every tick. A target within 12
+horizontal blocks or the `zvs_ai_full` tag restores exact full-rate selector
+execution. This intentionally changes far managed-mob reaction cadence and is
+therefore tag-gated; disable it if that tradeoff is unsuitable.
 
 ## `zvs-play-network`
 
-- `enabled: false`
+- `enabled: true`
+- `batching-mode: smart_execution`
+- `flush-interval-millis: 25`
 - `max-packets-per-flush: 1024`
-- `max-estimated-bytes-per-flush: 0`
+- `max-batch-bytes: 32000`
+- `safety-margin-bytes: 64`
+- `write-queue: true`
+- `off-thread-bypass: true`
+- `chat-bypass: true`
+- `packet-coalescing: true`
+- `max-coalesced-packets: 4000`
+- `mass-block-update-chunk-resend: true`
+- `mass-block-update-threshold: 512`
+- `mass-block-update-chunk-safety-bytes: 16384`
 - `metrics-enabled: false`
 - `zero-copy-decoding: true`
 - `in-place-frame-prefix: true`
 
-The queue is active only in PLAY when explicitly enabled. Login and
-configuration remain on upstream paths. A caller's normal `flush=true` request
-is folded into the end of the current drained burst and is not an ordering
-barrier. Protocol/latency-critical packets remain barriers. Every logical
-packet still performs its normal encoder/channel write; the removed
-`ClientboundBundlePacket` path did not reduce physical writes because Paper's
-unbundler expanded it again. Metrics therefore report actual channel writes,
-not bundle groups. The heuristic byte limit is disabled by default because
-encoded size is unknown at classification time. Safe in-place framing
-automatically falls back to a copy for shared, wrapped, composite, sliced, or
-read-only buffers.
+`smart_execution` drains at tick end or an early count/byte/critical limit.
+`strict_tick` holds ordinary traffic until tick end. `interval` uses its Netty
+event-loop timer and is not silently converted to tick mode. Login and
+configuration stay on upstream paths. A normal caller `flush=true` is folded
+into the batch; protocol and latency-critical packets are ordered barriers.
+Packet and custom-channel instant/ignored lists are configurable.
+
+The byte limit uses the real increase in Netty pending outbound bytes after the
+packet is encoded, rather than PulseNet's unused byte counter or a class-name
+estimate. Particles and sounds are actually deduplicated before encoding; no
+`ClientboundBundlePacket` write reduction is claimed because Paper expands a
+bundle back into delimiter + N packets + delimiter. Dense block updates become
+a chunk snapshot only after both the count threshold and a conservative byte
+cost comparison pass.
+
+Metrics remain off by default so `LongAdder`/CAS accounting is not paid on every
+packet. Safe retained-frame decoding and in-place prefixing have automatic copy
+fallbacks for unsupported buffer ownership/layout.
 
 ## `zvs-entity-network-lod`
 
-- `enabled: false`
+- `enabled: true`
 - `marker-tag: zvs_managed`
 - `near-distance: 32`
 - `medium-distance: 64`
@@ -74,27 +117,37 @@ read-only buffers.
 - `metrics-enabled: false`
 - `full-rate-tag: zvs_lod_full`
 
-Only relative movement and head rotation of tagged mobs are throttled per
-viewer. Cadence counts actual `ServerEntity` emissions per entity/viewer, so it
-cannot starve through a tick-modulus GCD. Every permitted thinned movement is
-an absolute position sync, and a final skipped update receives a bounded
-absolute recovery even if the mob stops moving. A near/full-rate transition
-after skipped deltas also starts with an absolute sync. Spawn, removal,
-teleport, equipment, velocity, metadata, and other critical state remain
-immediate. The controller and its per-viewer identity map are allocated lazily
-only after both the feature and marker tag opt in; the default-disabled and
-untagged paths do not run recovery scans or allocate LOD state.
+Only movement and head rotation of tagged mobs are thinned per viewer. Cadence
+counts actual `ServerEntity` emissions, so it cannot starve through a tick
+modulus GCD. Every permitted thinned movement is an absolute position sync; a
+final skipped update gets bounded recovery even after movement stops. Near,
+targeting, boss, and full-rate-tagged mobs are promoted. Spawn, removal,
+teleport, equipment, velocity, metadata, and critical state remain immediate.
+Controller/viewer maps are allocated lazily only for eligible tagged entities.
+No no-client benchmark result is evidence for this feature; it still requires
+one/four/sixteen-client visual validation.
+
+## `explosion-broadcast-optimization`
+
+- `enabled: true`
+
+The recipient scan uses Moonrise's maintained nearby-player index, then applies
+the unchanged vanilla 64-block distance test. It does not alter explosion
+physics or recipient eligibility.
 
 ## Plugin effect frame
 
-The matching ZombieVsSpear plugin aggregates particles and sounds at the end of
-the tick, applies per-player 32/64/96-block tiers, and keeps only the last health
-display or managed-mob name update for a tick. `/zvs metrics` prints logical,
-emitted, and reduced effect counts plus all fork metric snapshots.
+The matching ZombieVsSpear plugin routes high-frequency trails, beam/burst,
+projectile, meteor, status-hit, sweep/bleed, ground-impact, shooting-star, and
+sunfire effects through a tick-local frame. It aggregates particles/sounds,
+applies per-player distance budgets, and coalesces display/name state.
+`/zvs metrics` exposes source logical/emitted/reduced counts and fork snapshots.
 
 ## Rollback
 
-Set the relevant `enabled` option to `false` and restart. To return completely
-to upstream behavior, disable all four server sections and deploy an
-unmodified Paper build 121 jar. Keep `event-mode: compatibility` during canary
-testing unless the plugin event audit has been completed.
+Disable `pathetic-mob-pathfinding`, `zvs-managed-damage`, `zvs-managed-mob-ai`,
+`zvs-play-network`, `zvs-entity-network-lod`, and
+`explosion-broadcast-optimization`, then restart.
+Also disable the nested framing and dense-update toggles if a fully upstream
+network path is required. Keep `event-mode: compatibility` wherever every-hit
+Bukkit observation is required.

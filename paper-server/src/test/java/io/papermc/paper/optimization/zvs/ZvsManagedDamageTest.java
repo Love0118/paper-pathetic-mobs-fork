@@ -79,6 +79,40 @@ class ZvsManagedDamageTest {
     }
 
     @Test
+    void hybridReservesItsFirstEventBeforeAllocatingLaterEvents() {
+        final GlobalConfiguration.Optimizations.ZvsManagedDamage configuration = configuration();
+        final String previousMode = configuration.eventMode;
+        configuration.eventMode = "hybrid";
+        try {
+            ZvsManagedDamage.resetForTesting();
+            final AtomicReference<Double> health = new AtomicReference<>(10.0D);
+            final List<Boolean> fastPath = new ArrayList<>();
+            final List<Boolean> dispatched = new ArrayList<>();
+            final Entity handle = mock(Entity.class);
+            when(handle.getId()).thenReturn(44);
+            final LivingEntity target = managedTarget(44, health, new ArrayList<>(), () -> {
+                final boolean allocationLight = ZvsManagedDamage.usesAllocationLightFastPath(handle);
+                fastPath.add(allocationLight);
+                if (allocationLight) {
+                    ZvsManagedDamage.recordAllocationLightFastPath(handle);
+                } else {
+                    dispatched.add(ZvsManagedDamage.shouldDispatchEvent(handle));
+                }
+            });
+
+            ZvsManagedDamage.damage(target, 1.0D, null);
+            ZvsManagedDamage.damage(target, 1.0D, null);
+
+            assertEquals(List.of(false, true), fastPath);
+            assertEquals(List.of(true), dispatched);
+            assertEquals(1L, ZvsManagedDamage.snapshot().eventsDispatched());
+            assertEquals(1L, ZvsManagedDamage.snapshot().eventsSkipped());
+        } finally {
+            configuration.eventMode = previousMode;
+        }
+    }
+
+    @Test
     void unmarkedTargetsAreRejectedForCompatibilityFallback() {
         final LivingEntity target = mock(LivingEntity.class);
         when(target.isValid()).thenReturn(true);

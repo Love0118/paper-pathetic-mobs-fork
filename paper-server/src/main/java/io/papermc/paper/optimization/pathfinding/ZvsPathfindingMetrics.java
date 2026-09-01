@@ -40,6 +40,8 @@ public final class ZvsPathfindingMetrics {
     private static final LongAdder INVALIDATIONS = new LongAdder();
     private static final LongAdder FLOW_FIELD_BUILDS = new LongAdder();
     private static final LongAdder FLOW_FIELD_CELLS = new LongAdder();
+    private static final LongAdder SHARED_CELL_HITS = new LongAdder();
+    private static final LongAdder SHARED_CELL_MISSES = new LongAdder();
     private static final LongAdder[] RESULTS = adders(Result.values().length);
     private static final LongAdder[] REJECTIONS = adders(RejectionReason.values().length);
 
@@ -47,14 +49,35 @@ public final class ZvsPathfindingMetrics {
     }
 
     static void attempt() {
+        attempt(true);
+    }
+
+    static void attempt(final boolean enabled) {
+        if (!enabled) {
+            return;
+        }
         ATTEMPTS.increment();
     }
 
     static void reject(final RejectionReason reason) {
+        reject(true, reason);
+    }
+
+    static void reject(final boolean enabled, final RejectionReason reason) {
+        if (!enabled) {
+            return;
+        }
         REJECTIONS[reason.ordinal()].increment();
     }
 
     static void result(final Result result, final int evaluations, final boolean exhausted) {
+        result(true, result, evaluations, exhausted);
+    }
+
+    static void result(final boolean enabled, final Result result, final int evaluations, final boolean exhausted) {
+        if (!enabled) {
+            return;
+        }
         RESULTS[result.ordinal()].increment();
         EVALUATIONS.add(Math.max(0, evaluations));
         if (exhausted) {
@@ -69,6 +92,17 @@ public final class ZvsPathfindingMetrics {
     static void flowFieldBuild(final int cells) {
         FLOW_FIELD_BUILDS.increment();
         FLOW_FIELD_CELLS.add(Math.max(0, cells));
+    }
+
+    static void sharedCell(final boolean hit) {
+        sharedCell(true, hit);
+    }
+
+    static void sharedCell(final boolean enabled, final boolean hit) {
+        if (!enabled) {
+            return;
+        }
+        (hit ? SHARED_CELL_HITS : SHARED_CELL_MISSES).increment();
     }
 
     public static Snapshot snapshot() {
@@ -87,6 +121,8 @@ public final class ZvsPathfindingMetrics {
             INVALIDATIONS.sum(),
             FLOW_FIELD_BUILDS.sum(),
             FLOW_FIELD_CELLS.sum(),
+            SHARED_CELL_HITS.sum(),
+            SHARED_CELL_MISSES.sum(),
             Map.copyOf(results),
             Map.copyOf(rejections)
         );
@@ -99,6 +135,8 @@ public final class ZvsPathfindingMetrics {
         INVALIDATIONS.reset();
         FLOW_FIELD_BUILDS.reset();
         FLOW_FIELD_CELLS.reset();
+        SHARED_CELL_HITS.reset();
+        SHARED_CELL_MISSES.reset();
         for (final LongAdder counter : RESULTS) {
             counter.reset();
         }
@@ -122,6 +160,8 @@ public final class ZvsPathfindingMetrics {
         long invalidations,
         long flowFieldBuilds,
         long flowFieldCells,
+        long sharedCellHits,
+        long sharedCellMisses,
         Map<Result, Long> results,
         Map<RejectionReason, Long> rejections
     ) {

@@ -17,7 +17,7 @@ Example:
 ```powershell
 .\tools\zvs-benchmark.ps1 `
   -ServerJar .\artifacts\paper-26.2-121-zvs.jar `
-  -PluginJar "E:\projects\zombie vs spear\target\ZombieVsSpear-1.12.5.jar" `
+  -PluginJar "E:\projects\zombie vs spear\target\ZombieVsSpear-1.12.6.jar" `
   -RunDirectory E:\bench\zvs-combined-4p `
   -Round 50 -WarmupSeconds 60 -CaptureSeconds 180 -AcceptEula
 ```
@@ -77,8 +77,42 @@ for PLAY batching, entity LOD with viewers, managed damage, or effect-frame
 reduction. Those features still require the production arena, fixed load
 clients, and one-feature-at-a-time captures described above.
 
+## Canonical 0040 10,000-mob path and damage gate
+
+The release-candidate Paperclip rebuilt from 931 source, 6 resource, and 40
+feature patches was compared with stock Paper 26.2 build 121. Six fresh Java
+processes used an 8 GiB fixed heap, 100 warmup ticks, 200 measured ticks, and
+the order stock/candidate/candidate/stock/stock/candidate. Ten thousand tagged
+zombies were kept alive and directed at the same protected objective.
+
+Every measured run executed exactly ten load pulses, 100,000 explicit
+`Pathfinder.moveTo` requests, and 400,000 damage requests. This combines the
+late-wave shared-objective pathfinding and many-hit event workload instead of
+benchmarking idle mobs.
+
+| Variant | Measured runs (MSPT) | Median | Damage events/run | Watchdog dumps |
+| --- | --- | ---: | ---: | ---: |
+| Stock build 121 | 298.23, 298.27, 285.22 | 298.23 | 400,000 | 3/3 |
+| Canonical 0040 candidate | 98.61, 95.90, 96.60 | 96.60 | 100,000 | 0/3 |
+
+The median MSPT reduction is 67.61%. All six runs retained all 10,000 entities,
+produced a JFR with a recorded SHA-256, and completed with no Java exception.
+Stock's three watchdog dumps were captured in vanilla `WalkNodeEvaluator` /
+`PathFinder`; the candidate did not trigger the watchdog.
+
+A metrics-on diagnostic verified that the reverse field was actually used
+(12,625 flow-field hits) and that shared evaluated cells prevented repeated
+world evaluation. JFR then identified boxed-long `HashMap` nodes and temporary
+`PathPosition` objects in the candidate; primitive-long maps and integer cell
+lookups removed those allocation sites before the final six-process run.
+
+This gate directly supports the 2D path, managed AI cadence, and damage-event
+claims. It has no connected client, so it does not support PLAY write batching,
+effect packet coalescing, or per-viewer entity LOD claims. Those release gates
+remain open.
+
 ## Rollback
 
-Set the affected `enabled` field to `false` and restart. Disabling all four
+Set the affected `enabled` field to `false` and restart. Disabling all
 server-side ZVS sections restores the upstream execution paths. Keep an
 unmodified build 121 jar beside the candidate for immediate binary rollback.
