@@ -120,6 +120,8 @@ also pass.
 - [ ] Run the full relevant Paper test suite.
 - [ ] Run one-feature-at-a-time round 50+ A/B benchmarks.
 - [ ] Run the combined-feature soak and Netty leak test.
-- [ ] Document every default, fallback, known tradeoff, and rollback command.
-- [ ] Produce a checksummed candidate Paperclip jar.
+- [x] Document every default, fallback, known tradeoff, and rollback procedure.
+- [x] Produce a checksummed candidate Paperclip jar at
+  `artifacts/paper-26.2-build121-zvs-beta.jar` (SHA-256 recorded in
+  `artifacts/SHA256SUMS`).
 - [ ] Complete a canary run before changing production defaults.
