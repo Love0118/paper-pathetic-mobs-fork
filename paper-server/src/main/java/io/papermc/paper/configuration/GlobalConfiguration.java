@@ -110,6 +110,7 @@ public class GlobalConfiguration extends ConfigurationPart {
         public PatheticMobPathfinding patheticMobPathfinding;
         public ZvsManagedDamage zvsManagedDamage;
         public ZvsPlayNetwork zvsPlayNetwork;
+        public ZvsEntityNetworkLod zvsEntityNetworkLod;
 
         public class PatheticMobPathfinding extends ConfigurationPart {
             @Comment(
@@ -153,6 +154,23 @@ public class GlobalConfiguration extends ConfigurationPart {
             public boolean zeroCopyDecoding = true;
             @Comment("Prefix exclusively-owned frame buffers in place when sufficient writable headroom is available.")
             public boolean inPlaceFramePrefix = true;
+        }
+
+        public class ZvsEntityNetworkLod extends ConfigurationPart {
+            @Comment("Reduces movement and head-rotation cadence per viewer for scoreboard-tagged ZVS mobs.")
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on entities eligible for network LOD.")
+            public String markerTag = "zvs_managed";
+            @Comment("Entities at or below this horizontal distance use full-rate movement updates.")
+            public int nearDistance = 32;
+            @Comment("Entities at or below this horizontal distance use the medium cadence; farther tracked entities use the far cadence.")
+            public int mediumDistance = 64;
+            @Comment("Tick interval for medium-distance movement updates.")
+            public int mediumInterval = 2;
+            @Comment("Tick interval for far-distance movement updates.")
+            public int farInterval = 4;
+            @Comment("Tag that promotes bosses and special managed mobs to full-rate updates.")
+            public String fullRateTag = "zvs_lod_full";
         }
     }
 

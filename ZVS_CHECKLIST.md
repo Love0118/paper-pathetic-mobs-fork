@@ -94,10 +94,14 @@ also pass.
 
 ## 5. Managed mob network LOD
 
-- [ ] Add per-player near/medium/far update tiers for ZVS-managed mobs.
-- [ ] Promote attacking, boss, special, and soon-visible mobs to full rate.
-- [ ] Keep spawn, removal, teleport, equipment, and critical state immediate.
-- [ ] Add packet-type and distance-tier metrics.
+- [x] Add per-player near/medium/far update tiers for ZVS-managed mobs.
+- [x] Promote player-attacking, boss, explicitly special, and near/soon-visible
+  mobs to full rate.
+- [x] Keep spawn, removal, teleport, equipment, velocity, metadata, and critical
+  state immediate; throttled relative moves resynchronize with absolute position.
+- [x] Add movement/head-rotation and distance-tier metrics.
+- [x] Reapply the 0038 feature patch and pass focused cadence tests plus the full
+  31-task Paper build (2026-09-01).
 - [ ] Validate one/four/sixteen-player visual and combat behavior.
 
 ## 6. Release gates

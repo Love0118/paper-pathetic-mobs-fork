@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 19:42:29 +0900
+Subject: [PATCH] Add managed entity network LOD
+
+
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 7e9361407042ddaabe3f66ee8957ae84b6ef2317..a87723cfa7f17c53690d990961fc2678548381bd 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1339,7 +1339,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         @Override
+         public void sendToTrackingPlayers(final Packet<? super ClientGamePacketListener> packet) {
+             for (ServerPlayerConnection connection : this.seenBy) {
+-                connection.send(packet);
++                final Packet<? super ClientGamePacketListener> lodPacket = io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.packetFor(
++                    this.entity, connection.getPlayer(), packet, ChunkMap.this.level.getGameTime()
++                );
++                if (lodPacket != null) {
++                    connection.send(lodPacket);
++                }
+             }
+         }
+ 
+@@ -1354,8 +1359,14 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         @Override
+         public void sendToTrackingPlayersFiltered(final Packet<? super ClientGamePacketListener> packet, final Predicate<ServerPlayer> targetPredicate) {
+             for (ServerPlayerConnection connection : this.seenBy) {
+-                if (targetPredicate.test(connection.getPlayer())) {
+-                    connection.send(packet);
++                final ServerPlayer player = connection.getPlayer();
++                if (targetPredicate.test(player)) {
++                    final Packet<? super ClientGamePacketListener> lodPacket = io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.packetFor(
++                        this.entity, player, packet, ChunkMap.this.level.getGameTime()
++                    );
++                    if (lodPacket != null) {
++                        connection.send(lodPacket);
++                    }
+                 }
+             }
+         }
