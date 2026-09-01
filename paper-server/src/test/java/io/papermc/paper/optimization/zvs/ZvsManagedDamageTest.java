@@ -12,6 +12,7 @@ import org.bukkit.support.environment.Normal;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.Mockito.doAnswer;
@@ -111,6 +112,34 @@ class ZvsManagedDamageTest {
             ZvsManagedLifecycle.registerDeathHandler(null);
             configuration.eventMode = previousMode;
         }
+    }
+
+    @Test
+    void effectiveDeltaIncludesLateRoundAbsorptionOverflow() {
+        final AtomicReference<Double> health = new AtomicReference<>(20.0D);
+        final AtomicReference<Double> absorption = new AtomicReference<>(8.0D);
+        final LivingEntity target = managedTarget(71, health, new ArrayList<>(), null);
+        when(target.getAbsorptionAmount()).thenAnswer(ignored -> absorption.get());
+        doAnswer(invocation -> {
+            double remaining = invocation.getArgument(0);
+            double absorbed = Math.min(absorption.get(), remaining);
+            absorption.set(absorption.get() - absorbed);
+            remaining -= absorbed;
+            health.set(Math.max(0.0D, health.get() - remaining));
+            return null;
+        }).when(target).damage(anyDouble());
+
+        assertEquals(10.0D, ZvsManagedDamage.damage(target, 10.0D, null));
+        assertEquals(18.0D, health.get());
+        assertEquals(0.0D, absorption.get());
+    }
+
+    @Test
+    void batchRejectsMismatchedRequestArraysBeforeApplyingAnything() {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> ZvsManagedDamage.damageBatch(new LivingEntity[2], new double[1], null)
+        );
     }
 
     private static LivingEntity managedTarget(

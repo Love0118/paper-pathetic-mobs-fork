@@ -58,11 +58,13 @@ also pass.
 - [x] Add one server-internal batch hook for trusted programmatic damage.
 - [x] Coalesce managed mob hurt/damage notification once per entity/tick.
 - [x] Add trusted managed spawn/death paths with compatibility fallback.
-- [ ] Test direct damage, area damage, damage-over-time, turret contribution,
+- [x] Test direct damage, area damage, damage-over-time, turret contribution,
   absorption overflow, and synchronous death.
 - [x] Pass ordered batch, marker fallback, hybrid event, hurt-status coalescing,
-  trusted-death-handler, and the plugin's 521-test verification suite on Paper
-  API 26.2.
+  trusted-death-handler, absorption overflow, and the plugin's 524-test
+  verification suite on Paper API 26.2 build 121.
+- [x] Route multi-target area attacks through the ordered fork batch bridge with
+  transparent per-request Bukkit fallback on stock Paper.
 
 ## 3. Combat effect frames
 
