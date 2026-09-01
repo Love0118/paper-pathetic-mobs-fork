@@ -18,7 +18,9 @@ also pass.
   6 resource patches, and all feature patches).
 - [x] Run the unmodified baseline `gradlew build` successfully (31 tasks,
   including API/server tests and checks).
-- [ ] Add a reproducible late-round benchmark harness and capture stock results.
+- [x] Add a reproducible round-50+ JFR benchmark harness with pre/post fork
+  metric snapshots and fixed A/B ordering.
+- [ ] Capture stock build-121 results with the production arena and load clients.
 
 ## 1. Shared 2D navigation — mandatory
 
