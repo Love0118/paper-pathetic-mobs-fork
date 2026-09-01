@@ -117,7 +117,10 @@ also pass.
 
 ## 6. Release gates
 
-- [ ] Run the full relevant Paper test suite.
+- [x] Run the full relevant Paper test suite (`gradlew build`, 31 tasks,
+  2026-09-01).
+- [x] Smoke-start the candidate Paperclip with ZombieVsSpear, read all fork
+  snapshots through `/zvs metrics`, and stop cleanly.
 - [ ] Run one-feature-at-a-time round 50+ A/B benchmarks.
 - [ ] Run the combined-feature soak and Netty leak test.
 - [x] Document every default, fallback, known tradeoff, and rollback procedure.
