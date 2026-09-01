@@ -15,8 +15,11 @@ import org.jspecify.annotations.Nullable;
 /** Opt-in spawn and death shortcuts for the dedicated ZVS plugin. */
 @NullMarked
 public final class ZvsManagedLifecycle {
+    public static final int API_VERSION = ZvsManagedDamage.API_VERSION;
     private static final ThreadLocal<Boolean> TRUSTED_SPAWN = new ThreadLocal<>();
     private static volatile @Nullable DeathHandler deathHandler;
+    private static volatile @Nullable Object deathHandlerOwner;
+    private static final Object LEGACY_OWNER = new Object();
     private static final LongAdder TRUSTED_SPAWNS = new LongAdder();
     private static final LongAdder TRUSTED_DEATHS = new LongAdder();
 
@@ -58,8 +61,27 @@ public final class ZvsManagedLifecycle {
         return !Boolean.TRUE.equals(TRUSTED_SPAWN.get());
     }
 
-    public static void registerDeathHandler(final @Nullable DeathHandler handler) {
+    public static synchronized void registerDeathHandler(final @Nullable DeathHandler handler) {
+        if (handler == null) {
+            unregisterDeathHandler(LEGACY_OWNER);
+        } else {
+            registerDeathHandler(LEGACY_OWNER, handler);
+        }
+    }
+
+    public static synchronized void registerDeathHandler(final Object owner, final DeathHandler handler) {
+        if (deathHandler != null && deathHandlerOwner != owner) {
+            throw new IllegalStateException("A ZVS managed death handler is already registered by another owner");
+        }
+        deathHandlerOwner = owner;
         deathHandler = handler;
+    }
+
+    public static synchronized void unregisterDeathHandler(final Object owner) {
+        if (deathHandlerOwner == owner) {
+            deathHandler = null;
+            deathHandlerOwner = null;
+        }
     }
 
     /** Returns true when the dedicated handler replaced global event dispatch. */
@@ -67,7 +89,7 @@ public final class ZvsManagedLifecycle {
         final DeathHandler handler = deathHandler;
         if (handler == null
             || !GlobalConfiguration.get().optimizations.zvsManagedDamage.trustedDeathHandler
-            || !ZvsManagedDamage.isTrustedContext(victim)) {
+            || !ZvsManagedDamage.usesTrustedFastPath(victim)) {
             return false;
         }
         handler.handle(event);
@@ -84,6 +106,7 @@ public final class ZvsManagedLifecycle {
         TRUSTED_DEATHS.reset();
         TRUSTED_SPAWN.remove();
         deathHandler = null;
+        deathHandlerOwner = null;
     }
 
     @FunctionalInterface

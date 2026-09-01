@@ -405,6 +405,9 @@ public final class CraftServer implements Server {
         this.serverLinks = new CraftServerLinks(console);
 
         Bukkit.setServer(this);
+        io.papermc.paper.zvs.ZvsOptimization.installProvider(
+            io.papermc.paper.optimization.zvs.ZvsOptimizationProvider.INSTANCE
+        );
         // Paper start
         this.commandMap = new CraftCommandMap(this);
         this.pluginManager = new SimplePluginManager(this, commandMap);

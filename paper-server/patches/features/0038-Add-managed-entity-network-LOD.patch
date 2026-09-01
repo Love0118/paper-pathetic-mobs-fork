@@ -5,37 +5,119 @@ Subject: [PATCH] Add managed entity network LOD
 
 
 diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
-index 7e9361407042ddaabe3f66ee8957ae84b6ef2317..a87723cfa7f17c53690d990961fc2678548381bd 100644
+index 7e9361407042ddaabe3f66ee8957ae84b6ef2317..f740d8b7326d1974126af8418f3fd754b56a1538 100644
 --- a/net/minecraft/server/level/ChunkMap.java
 +++ b/net/minecraft/server/level/ChunkMap.java
-@@ -1339,7 +1339,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1076,6 +1076,9 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                     || ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)entity).moonrise$getChunkStatus().isOrAfter(FullChunkStatus.ENTITY_TICKING)) {
+                     tracker.serverEntity.sendChanges();
+                 }
++                if (tracker.zvsNetworkLod != null) {
++                    tracker.zvsNetworkLod.flushRecoveries(this.level.getGameTime(), tracker.seenBy);
++                }
+             }
+         } finally {
+             this.iteratingTrackerEntities = false;
+@@ -1235,6 +1238,7 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         private final int range;
+         private SectionPos lastSectionPos;
+         public final Set<ServerPlayerConnection> seenBy = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>(); // Paper - Perf: optimise map impl
++        private io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.Controller zvsNetworkLod;
+ 
+         // Paper start - optimise entity tracker
+         private long lastChunkUpdate = -1L;
+@@ -1326,6 +1330,14 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+             this.lastSectionPos = SectionPos.of(entity);
+         }
+ 
++        private io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.Controller zvsNetworkLodController() {
++            if (this.zvsNetworkLod == null
++                && io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.manages(this.entity)) {
++                this.zvsNetworkLod = new io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.Controller(this.entity);
++            }
++            return this.zvsNetworkLod;
++        }
++
+         @Override
+         public boolean equals(final Object obj) {
+             return obj instanceof ChunkMap.TrackedEntity trackedEntity && trackedEntity.entity.getId() == this.entity.getId();
+@@ -1338,9 +1350,26 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+ 
          @Override
          public void sendToTrackingPlayers(final Packet<? super ClientGamePacketListener> packet) {
++            // Paper start - prepare viewer-independent ZVS entity LOD state once per broadcast
++            final io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.Controller zvsNetworkLod =
++                this.zvsNetworkLodController();
++            if (zvsNetworkLod == null) {
++                for (ServerPlayerConnection connection : this.seenBy) {
++                    connection.send(packet);
++                }
++                return;
++            }
++            final io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.PreparedPacket preparedPacket =
++                io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.prepare(
++                    this.entity, packet, ChunkMap.this.level.getGameTime()
++                );
              for (ServerPlayerConnection connection : this.seenBy) {
 -                connection.send(packet);
-+                final Packet<? super ClientGamePacketListener> lodPacket = io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.packetFor(
-+                    this.entity, connection.getPlayer(), packet, ChunkMap.this.level.getGameTime()
-+                );
++                final Packet<? super ClientGamePacketListener> lodPacket = zvsNetworkLod.packetFor(preparedPacket, connection.getPlayer());
 +                if (lodPacket != null) {
 +                    connection.send(lodPacket);
 +                }
              }
++            // Paper end - prepare viewer-independent ZVS entity LOD state once per broadcast
          }
  
-@@ -1354,8 +1359,14 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+         @Override
+@@ -1353,22 +1382,49 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+ 
          @Override
          public void sendToTrackingPlayersFiltered(final Packet<? super ClientGamePacketListener> packet, final Predicate<ServerPlayer> targetPredicate) {
++            // Paper start - prepare viewer-independent ZVS entity LOD state once per broadcast
++            final io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.Controller zvsNetworkLod =
++                this.zvsNetworkLodController();
++            if (zvsNetworkLod == null) {
++                for (ServerPlayerConnection connection : this.seenBy) {
++                    final ServerPlayer player = connection.getPlayer();
++                    if (targetPredicate.test(player)) {
++                        connection.send(packet);
++                    }
++                }
++                return;
++            }
++            final io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.PreparedPacket preparedPacket =
++                io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.prepare(
++                    this.entity, packet, ChunkMap.this.level.getGameTime()
++                );
              for (ServerPlayerConnection connection : this.seenBy) {
 -                if (targetPredicate.test(connection.getPlayer())) {
 -                    connection.send(packet);
 +                final ServerPlayer player = connection.getPlayer();
 +                if (targetPredicate.test(player)) {
-+                    final Packet<? super ClientGamePacketListener> lodPacket = io.papermc.paper.optimization.zvs.network.ZvsEntityNetworkLod.packetFor(
-+                        this.entity, player, packet, ChunkMap.this.level.getGameTime()
-+                    );
++                    final Packet<? super ClientGamePacketListener> lodPacket = zvsNetworkLod.packetFor(preparedPacket, player);
 +                    if (lodPacket != null) {
 +                        connection.send(lodPacket);
 +                    }
                  }
              }
++            // Paper end - prepare viewer-independent ZVS entity LOD state once per broadcast
          }
+ 
+         public void broadcastRemoved() {
+             for (ServerPlayerConnection connection : this.seenBy) {
+                 this.serverEntity.removePairing(connection.getPlayer());
+             }
++            if (this.zvsNetworkLod != null) {
++                this.zvsNetworkLod.clear();
++            }
+         }
+ 
+         public void removePlayer(final ServerPlayer player) {
+             org.spigotmc.AsyncCatcher.catchOp("player tracker clear"); // Spigot
+             if (this.seenBy.remove(player.connection)) {
++                if (this.zvsNetworkLod != null) {
++                    this.zvsNetworkLod.remove(player);
++                }
+                 this.serverEntity.removePairing(player);
+                 if (this.seenBy.isEmpty()) {
+                     ChunkMap.this.level.debugSynchronizers().dropEntity(this.entity);

@@ -6,10 +6,83 @@ Subject: [PATCH] Coalesce managed mob hurt status
 Let the explicit ZVS damage context suppress duplicate client hurt-status packets while retaining damage, knockback, armor, attribution, and death processing.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 3a4da514c163e7565fc241835db52c464a5c4734..d1237d6b91b72e97a9dd8eafe6694a5f75567a59 100644
+index 3a4da514c163e7565fc241835db52c464a5c4734..0517b79de82c9e7be848874e8ec691b651ec2f0c 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -1511,7 +1511,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1466,36 +1466,53 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             damage = Float.MAX_VALUE;
+         }
+ 
+-        EntityDamageEvent event; // CraftBukkit // Paper - move this into the actual invuln check....
+         boolean tookFullDamage = true;
+         if (this.invulnerableTime > (float)this.invulnerableDuration / 2.0F && !source.is(DamageTypeTags.BYPASSES_COOLDOWN)) { // CraftBukkit - restore use of maxNoDamageTicks
+             if (damage <= this.lastHurt) {
+                 return false;
+             }
+ 
+-            // Paper start - only call damage event when actuallyHurt will be called - move call logic down
+-            event = this.handleEntityDamage(source, damage, this.lastHurt); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction
+-            damage = this.computeAmountFromEntityDamageEvent(event);
+-            // Paper end - only call damage event when actuallyHurt will be called - move call logic down
+-
+-            // CraftBukkit start
+-            if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) { // Paper - fix invulnerability reduction in EntityDamageEvent - no longer subtract lastHurt, that is part of the damage event calc now
+-                return false;
++            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesTrustedFastPath(this)) {
++                final ZvsTrustedDamage trusted = this.computeZvsTrustedDamage(source, damage, this.lastHurt);
++                damage = trusted.cooldownDamage();
++                if (!this.actuallyHurtZvsTrusted(level, source, trusted)) {
++                    return false;
++                }
++                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordTrustedEventSkipped(this);
++            } else {
++                // Paper start - only call damage event when actuallyHurt will be called - move call logic down
++                final EntityDamageEvent event = this.handleEntityDamage(source, damage, this.lastHurt); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction
++                damage = this.computeAmountFromEntityDamageEvent(event);
++                // Paper end - only call damage event when actuallyHurt will be called - move call logic down
++                // CraftBukkit start
++                if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) { // Paper - fix invulnerability reduction in EntityDamageEvent - no longer subtract lastHurt, that is part of the damage event calc now
++                    return false;
++                }
++                if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
++                // CraftBukkit end
+             }
+-            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
+-            // CraftBukkit end
+             this.lastHurt = damage;
+             tookFullDamage = false;
+         } else {
+-            // Paper start - only call damage event when actuallyHurt will be called - move call logic down
+-            event = this.handleEntityDamage(source, damage, 0); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction (none in this branch)
+-            damage = this.computeAmountFromEntityDamageEvent(event);
+-            // Paper end - only call damage event when actuallyHurt will be called - move call logic down
+-            // CraftBukkit start
+-            if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) {
+-                return false;
++            if (io.papermc.paper.optimization.zvs.ZvsManagedDamage.usesTrustedFastPath(this)) {
++                final ZvsTrustedDamage trusted = this.computeZvsTrustedDamage(source, damage, 0.0F);
++                damage = trusted.cooldownDamage();
++                if (!this.actuallyHurtZvsTrusted(level, source, trusted)) {
++                    return false;
++                }
++                io.papermc.paper.optimization.zvs.ZvsManagedDamage.recordTrustedEventSkipped(this);
++            } else {
++                // Paper start - only call damage event when actuallyHurt will be called - move call logic down
++                final EntityDamageEvent event = this.handleEntityDamage(source, damage, 0); // Paper - fix invulnerability reduction in EntityDamageEvent - pass lastDamage reduction (none in this branch)
++                damage = this.computeAmountFromEntityDamageEvent(event);
++                // Paper end - only call damage event when actuallyHurt will be called - move call logic down
++                // CraftBukkit start
++                if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) {
++                    return false;
++                }
++                if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
++                // CraftBukkit end
+             }
+-            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
+             this.lastHurt = damage;
+             this.invulnerableTime = this.invulnerableDuration; // CraftBukkit - restore use of maxNoDamageTicks
+             // this.actuallyHurt(level, source, damage);
+@@ -1511,7 +1528,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              if (blocked && blocksAttacks != null) {
                  blocksAttacks.onBlocked(level, this);
              } else {
@@ -22,3 +95,157 @@ index 3a4da514c163e7565fc241835db52c464a5c4734..d1237d6b91b72e97a9dd8eafe6694a5f
              }
  
              if (!source.is(DamageTypeTags.NO_IMPACT) && !blocked) { // CraftBukkit - Prevent marking hurt if the damage is blocked
+@@ -2475,6 +2496,153 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         // Paper end - fix invulnerability reduction in EntityDamageEvent
+     }
+ 
++    // Paper start - allocation-light trusted ZVS damage path
++    private ZvsTrustedDamage computeZvsTrustedDamage(
++        final DamageSource source,
++        float damage,
++        final float invulnerabilityRelatedLastDamage
++    ) {
++        final float base = damage;
++        final float invulnerability = invulnerabilityRelatedLastDamage == 0.0F || damage < invulnerabilityRelatedLastDamage
++            ? 0.0F
++            : -invulnerabilityRelatedLastDamage;
++        damage += invulnerability;
++
++        final float freezing = source.is(DamageTypeTags.IS_FREEZING) && this.is(EntityTypeTags.FREEZE_HURTS_EXTRA_TYPES)
++            ? -(damage - damage * 5.0F)
++            : -0.0F;
++        damage += freezing;
++
++        final float hardHat = source.is(DamageTypeTags.DAMAGES_HELMET) && !this.getItemBySlot(EquipmentSlot.HEAD).isEmpty()
++            ? -(damage - damage * 0.75F)
++            : -0.0F;
++        damage += hardHat;
++
++        final float blocking = this.canBlockAttack(source, damage)
++            ? -this.resolveBlockedDamage(source, damage)
++            : 0.0F;
++        damage += blocking;
++
++        final float armor = -(damage - this.getDamageAfterArmorAbsorb(source, damage));
++        damage += armor;
++
++        final float resistance;
++        if (!source.is(DamageTypeTags.BYPASSES_EFFECTS)
++            && this.hasEffect(MobEffects.RESISTANCE)
++            && !source.is(DamageTypeTags.BYPASSES_RESISTANCE)) {
++            final int absorbValue = (this.getEffect(MobEffects.RESISTANCE).getAmplifier() + 1) * 5;
++            resistance = -(damage - Math.max(damage * (25 - absorbValue) / 25.0F, 0.0F));
++        } else {
++            resistance = -0.0F;
++        }
++        damage += resistance;
++
++        final float magic = -(damage - this.getDamageAfterMagicAbsorb(source, damage));
++        damage += magic;
++
++        final float absorption = -Math.max(damage - Math.max(damage - this.getAbsorptionAmount(), 0.0F), 0.0F);
++        damage += absorption;
++        return new ZvsTrustedDamage(
++            base, invulnerability, freezing, hardHat, blocking, armor, resistance, magic, absorption,
++            base + blocking + freezing + hardHat, damage
++        );
++    }
++
++    private boolean actuallyHurtZvsTrusted(
++        final ServerLevel level,
++        final DamageSource source,
++        final ZvsTrustedDamage damage
++    ) {
++        if (this.isInvulnerableTo(level, source)) {
++            return true;
++        }
++        final float originalDamage = damage.base();
++        final float finalDamage = damage.finalDamage();
++
++        if (damage.resistance() < 0.0F) {
++            final float damageResisted = -damage.resistance();
++            if (damageResisted > 0.0F && damageResisted < Float.MAX_VALUE) {
++                if (this instanceof ServerPlayer serverPlayer) {
++                    serverPlayer.awardStat(Stats.DAMAGE_RESISTED, Math.round(damageResisted * 10.0F));
++                } else if (source.getEntity() instanceof ServerPlayer serverPlayer) {
++                    serverPlayer.awardStat(Stats.DAMAGE_DEALT_RESISTED, Math.round(damageResisted * 10.0F));
++                }
++            }
++        }
++
++        if (source.is(DamageTypeTags.DAMAGES_HELMET) && !this.getItemBySlot(EquipmentSlot.HEAD).isEmpty()) {
++            this.hurtHelmet(source, originalDamage + damage.invulnerability() + damage.blocking() + damage.freezing());
++        }
++        if (!source.is(DamageTypeTags.BYPASSES_ARMOR)) {
++            this.hurtArmor(
++                source,
++                originalDamage + damage.invulnerability() + damage.blocking() + damage.freezing() + damage.hardHat()
++            );
++        }
++        if (damage.blocking() < 0.0F) {
++            this.blockingItemEffects(level, source, originalDamage, -damage.blocking());
++        }
++
++        final boolean human = this instanceof net.minecraft.world.entity.player.Player;
++        final float absorbedDamage = -damage.absorption();
++        this.setAbsorptionAmount(Math.max(this.getAbsorptionAmount() - absorbedDamage, 0.0F));
++        if (absorbedDamage > 0.0F && absorbedDamage < Float.MAX_VALUE && this instanceof Player player) {
++            player.awardStat(Stats.DAMAGE_ABSORBED, Math.round(absorbedDamage * 10.0F));
++        }
++        if (absorbedDamage > 0.0F && absorbedDamage < Float.MAX_VALUE && source.getEntity() instanceof ServerPlayer serverPlayer) {
++            serverPlayer.awardStat(Stats.DAMAGE_DEALT_ABSORBED, Math.round(absorbedDamage * 10.0F));
++        }
++
++        if (finalDamage > 0.0F || !human) {
++            if (human) {
++                ((net.minecraft.world.entity.player.Player)this).causeFoodExhaustion(
++                    source.getFoodExhaustion(), org.bukkit.event.entity.EntityExhaustionEvent.ExhaustionReason.DAMAGED
++                );
++                if (finalDamage < Float.MAX_VALUE) {
++                    ((net.minecraft.world.entity.player.Player)this).awardStat(Stats.DAMAGE_TAKEN, Math.round(finalDamage * 10.0F));
++                }
++            }
++            this.getCombatTracker().recordDamage(source, finalDamage);
++            this.setHealth(this.getHealth() - finalDamage);
++            if (!human) {
++                this.setAbsorptionAmount(this.getAbsorptionAmount() - finalDamage);
++            }
++            this.gameEvent(GameEvent.ENTITY_DAMAGE);
++            return true;
++        }
++
++        if (damage.blocking() < 0.0F) {
++            if (this instanceof ServerPlayer serverPlayer) {
++                CriteriaTriggers.ENTITY_HURT_PLAYER.trigger(serverPlayer, source, originalDamage, finalDamage, true);
++                final float damageBlocked = -damage.blocking();
++                if (damageBlocked > 0.0F && damageBlocked < Float.MAX_VALUE) {
++                    serverPlayer.awardStat(Stats.DAMAGE_BLOCKED_BY_SHIELD, Math.round(damageBlocked * 10.0F));
++                }
++            }
++            if (source.getEntity() instanceof ServerPlayer sourcePlayer) {
++                CriteriaTriggers.PLAYER_HURT_ENTITY.trigger(sourcePlayer, this, source, originalDamage, finalDamage, true);
++            }
++            return !io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipVanillaDamageTickWhenShieldBlocked;
++        }
++        return true;
++    }
++
++    private record ZvsTrustedDamage(
++        float base,
++        float invulnerability,
++        float freezing,
++        float hardHat,
++        float blocking,
++        float armor,
++        float resistance,
++        float magic,
++        float absorption,
++        float cooldownDamage,
++        float finalDamage
++    ) {
++    }
++    // Paper end - allocation-light trusted ZVS damage path
++
+     protected boolean actuallyHurt(ServerLevel level, final DamageSource source, float dmg, final EntityDamageEvent event) { // void -> boolean, add final
+         if (!this.isInvulnerableTo(level, source)) {
+             if (event.isCancelled()) {

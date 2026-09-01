@@ -25,6 +25,7 @@ import org.jspecify.annotations.Nullable;
  */
 @NullMarked
 public final class ZvsManagedDamage {
+    public static final int API_VERSION = 2;
     public enum EventMode {
         COMPATIBILITY,
         HYBRID,
@@ -36,6 +37,7 @@ public final class ZvsManagedDamage {
     private static final Map<Entity, Boolean> HURT_STATUS_THIS_TICK = new IdentityHashMap<>();
     private static int eventTick = Integer.MIN_VALUE;
     private static int hurtStatusTick = Integer.MIN_VALUE;
+    private static boolean nonCompatibilityWarningLogged;
 
     private static final LongAdder BATCHES = new LongAdder();
     private static final LongAdder REQUESTS = new LongAdder();
@@ -94,8 +96,10 @@ public final class ZvsManagedDamage {
         }
 
         final double before = effectiveHealth(target);
+        final EventMode mode = configuredMode();
+        warnForSuppressedGlobalEvents(mode);
         final Context previous = CURRENT.get();
-        CURRENT.set(new Context(target, configuredMode()));
+        CURRENT.set(new Context(target, mode));
         try {
             if (source == null) {
                 target.damage(amount);
@@ -140,6 +144,18 @@ public final class ZvsManagedDamage {
         } catch (final IllegalArgumentException ignored) {
             return EventMode.COMPATIBILITY;
         }
+    }
+
+    private static synchronized void warnForSuppressedGlobalEvents(final EventMode mode) {
+        if (mode == EventMode.COMPATIBILITY || nonCompatibilityWarningLogged) {
+            return;
+        }
+        nonCompatibilityWarningLogged = true;
+        Bukkit.getLogger().warning(
+            "ZVS managed damage event-mode=" + mode.name().toLowerCase(Locale.ROOT)
+                + " suppresses some global EntityDamageEvent notifications for zvs_managed targets; "
+                + "anti-cheat, protection and logging plugins will not observe those suppressed hits."
+        );
     }
 
     /** Called by the CraftBukkit event bridge for an already-created damage event. */
@@ -191,11 +207,18 @@ public final class ZvsManagedDamage {
         return false;
     }
 
-    static boolean isTrustedContext(final Entity entity) {
+    public static boolean usesTrustedFastPath(final Entity entity) {
         final Context context = CURRENT.get();
         return context != null
             && context.mode() == EventMode.TRUSTED
             && context.target().getEntityId() == entity.getId();
+    }
+
+    public static void recordTrustedEventSkipped(final Entity entity) {
+        if (!usesTrustedFastPath(entity)) {
+            throw new IllegalStateException("Trusted damage fast path used outside its managed context");
+        }
+        EVENTS_SKIPPED.increment();
     }
 
     public static Snapshot snapshot() {
@@ -222,6 +245,7 @@ public final class ZvsManagedDamage {
         HURT_STATUS_THIS_TICK.clear();
         eventTick = Integer.MIN_VALUE;
         hurtStatusTick = Integer.MIN_VALUE;
+        nonCompatibilityWarningLogged = false;
         CURRENT.remove();
     }
 

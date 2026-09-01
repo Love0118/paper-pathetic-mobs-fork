@@ -1,12 +1,10 @@
 package io.papermc.paper.optimization.pathfinding;
 
-import io.papermc.paper.configuration.GlobalConfiguration;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.Arrays;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
@@ -16,166 +14,192 @@ import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Per-level cache of immutable successful 2D route suffixes.
+ * Per-level reverse-flow cache for successful managed two-dimensional routes.
  *
- * <p>A single path to a fixed objective populates entries for each cell on the
- * path, so mobs joining the route from different starts reuse the same tail.
- * The owning level invalidates the complete cache whenever a block state
- * changes. Broad invalidation deliberately favors correctness over hit rate.</p>
+ * <p>Successful paths are merged into one next-hop field per fixed objective.
+ * This replaces the former exact-start suffix cache plus synchronous Dijkstra
+ * build: a request never performs extra world evaluation just to populate a
+ * cache, and the same next-hop data is not stored twice.</p>
  */
 @NullMarked
 public final class ZvsSharedPathCache {
-    private final LinkedHashMap<Key, CachedPath> routes = new LinkedHashMap<>(256, 0.75F, true);
     private final ZvsReverseFlowFieldCache flowFields = new ZvsReverseFlowFieldCache();
+    private final Long2LongOpenHashMap sectionRevisions = new Long2LongOpenHashMap();
     private long revision;
 
-    public synchronized void invalidate() {
-        this.revision++;
-        if (!this.routes.isEmpty()) {
-            this.routes.clear();
+    public void invalidate() {
+        synchronized (this) {
+            this.revision++;
+            this.sectionRevisions.clear();
         }
         this.flowFields.invalidate();
         ZvsPathfindingMetrics.invalidation();
     }
 
-    public synchronized long revision() {
-        return this.revision;
-    }
-
-    @Nullable
-    Path find(
-        final int profile,
-        final Node start,
-        final BlockPos target,
-        final int accuracy,
-        final float maxRange
-    ) {
-        final int maximumEntries = maximumEntries();
-        if (maximumEntries <= 0) {
-            return null;
-        }
-        final CachedPath cached;
-        synchronized (this) {
-            cached = this.routes.get(new Key(start.asBlockPos().asLong(), target.asLong(), accuracy, profile));
-        }
-        return cached == null ? null : cached.toPath(start, maxRange);
-    }
-
-    void record(final int profile, final Path path, final int accuracy) {
-        if (!path.canReach() || path.getNodeCount() < 2) {
-            return;
-        }
-        final int maximumEntries = maximumEntries();
-        final int maximumNodes = Math.max(
-            0,
-            GlobalConfiguration.get().optimizations.patheticMobPathfinding.sharedRouteMaxPathNodes
-        );
-        if (maximumEntries <= 0 || maximumNodes < 2 || path.getNodeCount() > maximumNodes) {
-            return;
-        }
-
-        final CachedNode[] nodes = new CachedNode[path.getNodeCount()];
-        for (int index = 0; index < nodes.length; index++) {
-            final Node node = path.getNode(index);
-            nodes[index] = new CachedNode(node.x, node.y, node.z, node.type, node.costMalus);
-        }
-
-        synchronized (this) {
-            for (int index = 0; index < nodes.length - 1; index++) {
-                final CachedNode start = nodes[index];
-                this.routes.put(
-                    new Key(BlockPos.asLong(start.x(), start.y(), start.z()), path.getTarget().asLong(), accuracy, profile),
-                    new CachedPath(nodes, index, path.getTarget())
-                );
+    public synchronized void invalidate(final BlockPos changedPosition) {
+        this.revision++;
+        final LongOpenHashSet affectedSections = new LongOpenHashSet(8);
+        for (int offsetX = -2; offsetX <= 2; offsetX++) {
+            final int sectionX = SectionPos.blockToSectionCoord(changedPosition.getX() + offsetX);
+            for (int offsetY = -2; offsetY <= 2; offsetY++) {
+                final int sectionY = SectionPos.blockToSectionCoord(changedPosition.getY() + offsetY);
+                for (int offsetZ = -2; offsetZ <= 2; offsetZ++) {
+                    affectedSections.add(SectionPos.asLong(
+                        sectionX,
+                        sectionY,
+                        SectionPos.blockToSectionCoord(changedPosition.getZ() + offsetZ)
+                    ));
+                }
             }
-            this.trimTo(maximumEntries);
         }
+        for (final long section : affectedSections) {
+            this.sectionRevisions.addTo(section, 1L);
+        }
+        ZvsPathfindingMetrics.invalidation();
     }
 
     @Nullable
-    Path findOrBuildFlowField(
-        final int profile,
-        final PatheticNavigationPointProvider provider,
-        final PatheticEnvironmentContext context,
+    Path findFlowField(
+        final PathProfile profile,
         final Node start,
         final BlockPos target,
-        final List<BlockPos> endpoints,
         final int accuracy,
         final float maxRange,
         final int maxPathLength
     ) {
-        return this.flowFields.findOrBuild(
-            profile, provider, context, start, target, endpoints, accuracy, maxRange, maxPathLength
+        return this.flowFields.find(
+            profile, start, target, accuracy, maxRange, maxPathLength, this::isCurrent
         );
     }
 
+    void recordFlowField(
+        final PathProfile profile,
+        final Path path,
+        final int accuracy,
+        final float maxRange
+    ) {
+        this.flowFields.record(profile, path, accuracy, maxRange, this::snapshot);
+    }
+
     synchronized int sizeForTesting() {
-        return this.routes.size();
+        return this.flowFields.sizeForTesting();
     }
 
-    private void trimTo(final int maximumEntries) {
-        final Iterator<Map.Entry<Key, CachedPath>> iterator = this.routes.entrySet().iterator();
-        while (this.routes.size() > maximumEntries && iterator.hasNext()) {
-            iterator.next();
-            iterator.remove();
+    synchronized long revisionForTesting() {
+        return this.revision;
+    }
+
+    private synchronized SectionSnapshot snapshot(final long[] sections) {
+        final long[] revisions = new long[sections.length];
+        for (int index = 0; index < sections.length; index++) {
+            revisions[index] = this.sectionRevisions.get(sections[index]);
         }
+        return new SectionSnapshot(sections, revisions);
     }
 
-    static int profile(final Mob mob, final WalkNodeEvaluator evaluator) {
-        int hash = System.identityHashCode(mob.getType());
-        hash = 31 * hash + Float.floatToIntBits(mob.getBbWidth());
-        hash = 31 * hash + Float.floatToIntBits(mob.getBbHeight());
-        hash = 31 * hash + Boolean.hashCode(evaluator.canPassDoors());
-        hash = 31 * hash + Boolean.hashCode(evaluator.canOpenDoors());
-        hash = 31 * hash + Boolean.hashCode(evaluator.canFloat());
-        hash = 31 * hash + Boolean.hashCode(evaluator.canWalkOverFences());
+    private synchronized boolean isCurrent(final SectionSnapshot snapshot) {
+        for (int index = 0; index < snapshot.sections().length; index++) {
+            if (this.sectionRevisions.get(snapshot.sections()[index]) != snapshot.revisions()[index]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static PathProfile profile(final Mob mob, final WalkNodeEvaluator evaluator) {
+        int supportedCount = 0;
         for (final PathType pathType : PathType.values()) {
             if (PatheticNavigationPointProvider.isSupportedFlatType(pathType)) {
-                hash = 31 * hash + Float.floatToIntBits(mob.getPathfindingMalus(pathType));
+                supportedCount++;
             }
         }
-        return hash;
-    }
-
-    private static int maximumEntries() {
-        return Math.max(0, GlobalConfiguration.get().optimizations.patheticMobPathfinding.sharedRouteCacheEntries);
-    }
-
-    private record Key(long start, long target, int accuracy, int profile) {
-    }
-
-    private record CachedNode(int x, int y, int z, PathType type, float malus) {
-    }
-
-    private record CachedPath(CachedNode[] nodes, int offset, BlockPos target) {
-        @Nullable
-        Path toPath(final Node start, final float maxRange) {
-            if (this.offset >= this.nodes.length
-                || this.nodes[this.offset].x() != start.x
-                || this.nodes[this.offset].y() != start.y
-                || this.nodes[this.offset].z() != start.z) {
-                return null;
+        final int[] malusBits = new int[supportedCount];
+        int index = 0;
+        for (final PathType pathType : PathType.values()) {
+            if (PatheticNavigationPointProvider.isSupportedFlatType(pathType)) {
+                malusBits[index++] = Float.floatToIntBits(mob.getPathfindingMalus(pathType));
             }
+        }
+        return new PathProfile(
+            mob.getType(),
+            Float.floatToIntBits(mob.getBbWidth()),
+            Float.floatToIntBits(mob.getBbHeight()),
+            evaluator.canPassDoors(),
+            evaluator.canOpenDoors(),
+            evaluator.canFloat(),
+            evaluator.canWalkOverFences(),
+            malusBits
+        );
+    }
 
-            final List<Node> rebuilt = new ArrayList<>(this.nodes.length - this.offset);
-            rebuilt.add(start);
-            Node previous = start;
-            for (int index = this.offset + 1; index < this.nodes.length; index++) {
-                final CachedNode cached = this.nodes[index];
-                final Node node = new Node(cached.x(), cached.y(), cached.z());
-                node.type = cached.type();
-                node.costMalus = cached.malus();
-                node.cameFrom = previous;
-                node.walkedDistance = previous.walkedDistance + previous.distanceTo(node);
-                if (node.walkedDistance >= maxRange) {
-                    return null;
-                }
-                node.g = previous.g + previous.distanceTo(node) + Math.max(0.0F, node.costMalus);
-                node.f = node.g;
-                rebuilt.add(node);
-                previous = node;
+    static PathProfile syntheticProfile(final int identity) {
+        return new PathProfile(identity, 0, 0, false, false, false, false, new int[0]);
+    }
+
+    record SectionSnapshot(long[] sections, long[] revisions) {
+    }
+
+    /** Collision-safe equality key. Hash collisions only cause a normal map probe. */
+    static final class PathProfile {
+        private final Object mobType;
+        private final int widthBits;
+        private final int heightBits;
+        private final boolean canPassDoors;
+        private final boolean canOpenDoors;
+        private final boolean canFloat;
+        private final boolean canWalkOverFences;
+        private final int[] malusBits;
+        private final int hashCode;
+
+        private PathProfile(
+            final Object mobType,
+            final int widthBits,
+            final int heightBits,
+            final boolean canPassDoors,
+            final boolean canOpenDoors,
+            final boolean canFloat,
+            final boolean canWalkOverFences,
+            final int[] malusBits
+        ) {
+            this.mobType = mobType;
+            this.widthBits = widthBits;
+            this.heightBits = heightBits;
+            this.canPassDoors = canPassDoors;
+            this.canOpenDoors = canOpenDoors;
+            this.canFloat = canFloat;
+            this.canWalkOverFences = canWalkOverFences;
+            this.malusBits = malusBits.clone();
+            int hash = System.identityHashCode(mobType);
+            hash = 31 * hash + widthBits;
+            hash = 31 * hash + heightBits;
+            hash = 31 * hash + Boolean.hashCode(canPassDoors);
+            hash = 31 * hash + Boolean.hashCode(canOpenDoors);
+            hash = 31 * hash + Boolean.hashCode(canFloat);
+            hash = 31 * hash + Boolean.hashCode(canWalkOverFences);
+            this.hashCode = 31 * hash + Arrays.hashCode(this.malusBits);
+        }
+
+        @Override
+        public boolean equals(final Object other) {
+            if (this == other) {
+                return true;
             }
-            return new Path(rebuilt, this.target, true);
+            if (!(other instanceof PathProfile profile)) {
+                return false;
+            }
+            return this.mobType == profile.mobType
+                && this.widthBits == profile.widthBits
+                && this.heightBits == profile.heightBits
+                && this.canPassDoors == profile.canPassDoors
+                && this.canOpenDoors == profile.canOpenDoors
+                && this.canFloat == profile.canFloat
+                && this.canWalkOverFences == profile.canWalkOverFences
+                && Arrays.equals(this.malusBits, profile.malusBits);
+        }
+
+        @Override
+        public int hashCode() {
+            return this.hashCode;
         }
     }
 }

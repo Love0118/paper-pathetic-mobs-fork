@@ -1,13 +1,18 @@
 package io.papermc.paper.optimization.pathfinding;
 
+import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.level.PathNavigationRegion;
 import net.minecraft.world.level.pathfinder.AmphibiousNodeEvaluator;
 import net.minecraft.world.level.pathfinder.FlyNodeEvaluator;
 import net.minecraft.world.level.pathfinder.Node;
+import net.minecraft.world.level.pathfinder.PathfindingContext;
 import net.minecraft.world.level.pathfinder.PathType;
 import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
 import org.bukkit.support.environment.Normal;
@@ -18,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 @Normal
 class PatheticMobPathfindingTest {
@@ -179,8 +185,25 @@ class PatheticMobPathfindingTest {
     }
 
     @Test
-    void sharedRouteCacheReusesSuffixesAndInvalidatesTogether() {
+    void blockedTwoDimensionalProgressIsReturnedAsAnUnreachedPartialPath() {
+        final Node start = walkableNode(0, 64, 0);
+        final Node progress = walkableNode(1, 64, 0);
+        progress.cameFrom = start;
+        progress.walkedDistance = 1.0F;
+
+        final net.minecraft.world.level.pathfinder.Path partial = PatheticMobPathfinding.partialPath(
+            List.of(start, progress), new BlockPos(4, 64, 0)
+        );
+
+        assertNotNull(partial);
+        assertFalse(partial.canReach());
+        assertEquals(progress.asBlockPos(), partial.getEndNode().asBlockPos());
+    }
+
+    @Test
+    void successfulRoutesPopulateOneReverseFlowFieldAndInvalidateTogether() {
         final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final ZvsSharedPathCache.PathProfile profile = ZvsSharedPathCache.syntheticProfile(17);
         final Node first = walkableNode(0, 64, 0);
         final Node second = walkableNode(1, 64, 0);
         second.cameFrom = first;
@@ -190,19 +213,52 @@ class PatheticMobPathfindingTest {
         third.walkedDistance = 2.0F;
         final BlockPos target = new BlockPos(2, 64, 0);
 
-        cache.record(17, new net.minecraft.world.level.pathfinder.Path(List.of(first, second, third), target, true), 0);
+        for (int request = 0; request < 4; request++) {
+            assertNull(cache.findFlowField(profile, first, target, 0, 8.0F, 8));
+        }
+        cache.recordFlowField(
+            profile, new net.minecraft.world.level.pathfinder.Path(List.of(first, second, third), target, true), 0, 8.0F
+        );
 
-        assertEquals(2, cache.sizeForTesting());
-        final net.minecraft.world.level.pathfinder.Path suffix = cache.find(17, walkableNode(1, 64, 0), target, 0, 8.0F);
+        assertEquals(1, cache.sizeForTesting());
+        final net.minecraft.world.level.pathfinder.Path suffix = cache.findFlowField(
+            profile, walkableNode(1, 64, 0), target, 0, 8.0F, 8
+        );
         assertNotNull(suffix);
         assertEquals(2, suffix.getNodeCount());
         assertEquals(target, suffix.getEndNode().asBlockPos());
 
-        final long previousRevision = cache.revision();
+        final long previousRevision = cache.revisionForTesting();
         cache.invalidate();
-        assertEquals(previousRevision + 1, cache.revision());
+        assertEquals(previousRevision + 1, cache.revisionForTesting());
         assertEquals(0, cache.sizeForTesting());
-        assertNull(cache.find(17, walkableNode(1, 64, 0), target, 0, 8.0F));
+        assertNull(cache.findFlowField(profile, walkableNode(1, 64, 0), target, 0, 8.0F, 8));
+    }
+
+    @Test
+    void sectionInvalidationKeepsUnrelatedRoutesAndRejectsOverlappingRoutes() {
+        final ZvsSharedPathCache cache = new ZvsSharedPathCache();
+        final ZvsSharedPathCache.PathProfile profile = ZvsSharedPathCache.syntheticProfile(17);
+        final Node first = walkableNode(0, 64, 0);
+        final Node second = walkableNode(1, 64, 0);
+        second.cameFrom = first;
+        second.walkedDistance = 1.0F;
+        final Node third = walkableNode(2, 64, 0);
+        third.cameFrom = second;
+        third.walkedDistance = 2.0F;
+        final BlockPos target = new BlockPos(2, 64, 0);
+        for (int request = 0; request < 4; request++) {
+            assertNull(cache.findFlowField(profile, first, target, 0, 8.0F, 8));
+        }
+        cache.recordFlowField(
+            profile, new net.minecraft.world.level.pathfinder.Path(List.of(first, second, third), target, true), 0, 8.0F
+        );
+
+        cache.invalidate(new BlockPos(200, 64, 200));
+        assertNotNull(cache.findFlowField(profile, walkableNode(1, 64, 0), target, 0, 8.0F, 8));
+
+        cache.invalidate(new BlockPos(1, 64, 0));
+        assertNull(cache.findFlowField(profile, walkableNode(1, 64, 0), target, 0, 8.0F, 8));
     }
 
     @Test
@@ -227,6 +283,60 @@ class PatheticMobPathfindingTest {
             middlePosition, new ZvsReverseFlowFieldCache.Cell(startPosition, 1.0D, PathType.WALKABLE, 0.0F)
         ));
         assertNull(cycle.toPath(walkableNode(0, 64, 0), target, 8.0F, 8));
+    }
+
+    @Test
+    void concurrentSuccessfulRoutesMergeIntoOneFieldWithoutWorldEvaluation() throws Exception {
+        final BlockPos target = new BlockPos(4, 64, 0);
+        final ZvsReverseFlowFieldCache cache = new ZvsReverseFlowFieldCache();
+        final ZvsSharedPathCache.PathProfile profile = ZvsSharedPathCache.syntheticProfile(17);
+        final Node start = walkableNode(0, 64, 0);
+        final Node one = walkableNode(1, 64, 0);
+        final Node two = walkableNode(2, 64, 0);
+        final Node three = walkableNode(3, 64, 0);
+        final Node end = walkableNode(4, 64, 0);
+        final net.minecraft.world.level.pathfinder.Path route = new net.minecraft.world.level.pathfinder.Path(
+            List.of(start, one, two, three, end), target, true
+        );
+
+        for (int request = 0; request < 4; request++) {
+            assertNull(cache.find(profile, start, target, 0, 8.0F, 8, snapshot -> true));
+        }
+        CompletableFuture.allOf(
+            CompletableFuture.runAsync(() -> cache.record(profile, route, 0, 8.0F, PatheticMobPathfindingTest::snapshot)),
+            CompletableFuture.runAsync(() -> cache.record(profile, route, 0, 8.0F, PatheticMobPathfindingTest::snapshot))
+        ).get();
+
+        assertEquals(1, cache.sizeForTesting());
+        assertNotNull(cache.find(profile, walkableNode(1, 64, 0), target, 0, 8.0F, 8, snapshot -> true));
+    }
+
+    private static ZvsSharedPathCache.SectionSnapshot snapshot(final long[] sections) {
+        return new ZvsSharedPathCache.SectionSnapshot(sections, new long[sections.length]);
+    }
+
+    @Test
+    void seededStartReusesTheFloorEvaluationWithoutSpendingBudget() {
+        final Node start = walkableNode(0, 64, 0);
+        final PatheticNavigationPointProvider provider = new PatheticNavigationPointProvider();
+        final PatheticEnvironmentContext context = testContext(1);
+        provider.seed(start);
+
+        final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(0, 64, 0), context);
+
+        assertTrue(point.isTraversable());
+        assertEquals(1, context.evaluationBudget().remaining());
+    }
+
+    private static PatheticEnvironmentContext testContext(final int budget) {
+        return new PatheticEnvironmentContext(
+            mock(PathNavigationRegion.class),
+            mock(Mob.class),
+            new WalkNodeEvaluator(),
+            mock(PathfindingContext.class),
+            64.0D,
+            new PatheticEvaluationBudget(budget)
+        );
     }
 
     private static Node walkableNode(final int x, final int y, final int z) {

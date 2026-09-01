@@ -118,13 +118,11 @@ public class GlobalConfiguration extends ConfigurationPart {
                 "Unsupported requests fall back to Paper before the two-dimensional engine evaluates the world."
             )
             public boolean enabled = true;
-            @Comment("Maximum number of shared route suffixes cached per world. Set to 0 to disable route sharing.")
-            public int sharedRouteCacheEntries = 16_384;
-            @Comment("Maximum number of nodes from one successful path that can populate the shared route cache.")
-            public int sharedRouteMaxPathNodes = 256;
-            @Comment("Build a reverse flow field after this many requests for the same fixed objective. Set to 0 to disable.")
+            @Comment("Scoreboard tag required on mobs eligible for the two-dimensional pathfinder.")
+            public String markerTag = "zvs_managed";
+            @Comment("Start accumulating a reverse flow field after this many requests for the same fixed objective. Set to 0 to disable.")
             public int reverseFlowFieldBuildAfterRequests = 4;
-            @Comment("Maximum evaluated cells stored by one reverse flow field.")
+            @Comment("Maximum successful-route cells stored by one reverse flow field.")
             public int reverseFlowFieldMaxCells = 4_096;
             @Comment("Maximum fixed-objective reverse flow fields cached per world.")
             public int reverseFlowFieldCacheEntries = 64;
@@ -147,15 +145,13 @@ public class GlobalConfiguration extends ConfigurationPart {
 
         public class ZvsPlayNetwork extends ConfigurationPart {
             @Comment("Coalesces normal PLAY writes per connection while preserving FIFO packet and listener order.")
-            public boolean enabled = true;
+            public boolean enabled = false;
             @Comment("Maximum logical packets written before the current batch is flushed. Must be at least 1.")
             public int maxPacketsPerFlush = 1_024;
-            @Comment("Estimated encoded bytes written before the current batch is flushed. Must be at least 1.")
-            public int maxEstimatedBytesPerFlush = 32_768;
-            @Comment("Bundles consecutive reduced particle and sound packets without reordering other PLAY packets.")
-            public boolean bundleEffects = true;
-            @Comment("Maximum particle and sound packets in one client bundle. Values above 4,000 are clamped.")
-            public int maxEffectBundlePackets = 4_000;
+            @Comment("Heuristic encoded-byte limit per flush. Set to 0 to disable; packet sizes are estimates until encoding.")
+            public int maxEstimatedBytesPerFlush = 0;
+            @Comment("Collect per-packet network counters. Disabled by default so instrumentation does not tax production traffic.")
+            public boolean metricsEnabled = false;
             @Comment("Use retained slices for complete uncompressed frames instead of copying their payload.")
             public boolean zeroCopyDecoding = true;
             @Comment("Prefix exclusively-owned frame buffers in place when sufficient writable headroom is available.")
@@ -163,18 +159,22 @@ public class GlobalConfiguration extends ConfigurationPart {
         }
 
         public class ZvsEntityNetworkLod extends ConfigurationPart {
-            @Comment("Reduces movement and head-rotation cadence per viewer for scoreboard-tagged ZVS mobs.")
-            public boolean enabled = true;
+            @Comment("Reduces movement and head-rotation cadence per viewer for scoreboard-tagged ZVS mobs using absolute recovery syncs.")
+            public boolean enabled = false;
             @Comment("Scoreboard tag required on entities eligible for network LOD.")
             public String markerTag = "zvs_managed";
             @Comment("Entities at or below this horizontal distance use full-rate movement updates.")
             public int nearDistance = 32;
             @Comment("Entities at or below this horizontal distance use the medium cadence; farther tracked entities use the far cadence.")
             public int mediumDistance = 64;
-            @Comment("Tick interval for medium-distance movement updates.")
+            @Comment("Send every Nth ServerEntity movement/head emission at medium distance.")
             public int mediumInterval = 2;
-            @Comment("Tick interval for far-distance movement updates.")
+            @Comment("Send every Nth ServerEntity movement/head emission at far distance.")
             public int farInterval = 4;
+            @Comment("Maximum ticks a final skipped movement or head update may remain pending after emissions stop.")
+            public int maxRecoveryTicks = 20;
+            @Comment("Collect per-viewer LOD counters. Disabled by default to avoid instrumentation overhead.")
+            public boolean metricsEnabled = false;
             @Comment("Tag that promotes bosses and special managed mobs to full-rate updates.")
             public String fullRateTag = "zvs_lod_full";
         }

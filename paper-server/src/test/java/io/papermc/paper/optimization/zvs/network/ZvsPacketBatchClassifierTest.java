@@ -20,18 +20,16 @@ class ZvsPacketBatchClassifierTest {
     void protocolAndGameplayCriticalPacketsAreFlushBarriers() {
         assertBarrier(mock(ClientboundKeepAlivePacket.class));
         assertBarrier(mock(ClientboundCustomPayloadPacket.class));
-        assertBarrier(mock(ClientboundDamageEventPacket.class));
         assertBarrier(mock(ClientboundLevelChunkWithLightPacket.class));
         assertBarrier(mock(ClientboundPlayerPositionPacket.class));
     }
 
     @Test
-    void effectsCanBundleButAnExplicitCallerFlushStillWins() {
+    void callerFlushAndOrdinaryGameplayPacketsAreNotOrderingBarriers() {
         final ClientboundLevelParticlesPacket particle = mock(ClientboundLevelParticlesPacket.class);
-        final ZvsPacketBatchClassifier.Classification queued = ZvsPacketBatchClassifier.classify(particle, false);
-        assertFalse(queued.barrier());
-        assertTrue(queued.effectBundleCandidate());
-        assertTrue(ZvsPacketBatchClassifier.classify(particle, true).barrier());
+        assertFalse(ZvsPacketBatchClassifier.classify(particle, false).barrier());
+        assertFalse(ZvsPacketBatchClassifier.classify(particle, true).barrier());
+        assertFalse(ZvsPacketBatchClassifier.classify(mock(ClientboundDamageEventPacket.class), true).barrier());
     }
 
     private static void assertBarrier(final Packet<?> packet) {

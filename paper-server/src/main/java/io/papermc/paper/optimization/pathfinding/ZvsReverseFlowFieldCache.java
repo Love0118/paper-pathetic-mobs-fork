@@ -1,16 +1,16 @@
 package io.papermc.paper.optimization.pathfinding;
 
-import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import io.papermc.paper.configuration.GlobalConfiguration;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.level.pathfinder.PathType;
@@ -19,10 +19,8 @@ import org.jspecify.annotations.Nullable;
 
 @NullMarked
 final class ZvsReverseFlowFieldCache {
-    private static final int[] CARDINAL_X = {1, -1, 0, 0};
-    private static final int[] CARDINAL_Z = {0, 0, 1, -1};
     private final LinkedHashMap<Key, FlowField> fields = new LinkedHashMap<>(16, 0.75F, true);
-    private final HashMap<Key, Integer> demand = new HashMap<>();
+    private final LinkedHashMap<Key, Integer> demand = new LinkedHashMap<>(32, 0.75F, true);
 
     synchronized void invalidate() {
         this.fields.clear();
@@ -30,109 +28,115 @@ final class ZvsReverseFlowFieldCache {
     }
 
     @Nullable
-    Path findOrBuild(
-        final int profile,
-        final PatheticNavigationPointProvider provider,
-        final PatheticEnvironmentContext context,
+    Path find(
+        final ZvsSharedPathCache.PathProfile profile,
         final Node start,
         final BlockPos target,
-        final List<BlockPos> endpoints,
         final int accuracy,
         final float maxRange,
-        final int maxPathLength
+        final int maxPathLength,
+        final Predicate<ZvsSharedPathCache.SectionSnapshot> snapshotValidator
     ) {
-        final GlobalConfiguration.Optimizations.PatheticMobPathfinding configuration =
-            GlobalConfiguration.get().optimizations.patheticMobPathfinding;
-        final int buildAfter = Math.max(0, configuration.reverseFlowFieldBuildAfterRequests);
-        final int maximumCells = Math.max(0, configuration.reverseFlowFieldMaxCells);
-        final int maximumFields = Math.max(0, configuration.reverseFlowFieldCacheEntries);
-        if (buildAfter == 0 || maximumCells == 0 || maximumFields == 0) {
+        final Limits limits = limits();
+        if (!limits.enabled()) {
             return null;
         }
 
-        final Key key = new Key(profile, target.asLong(), accuracy, Math.max(1, (int)Math.ceil(maxRange)));
-        FlowField field;
+        final Key key = key(profile, target, accuracy, maxRange);
+        final FlowField field;
         synchronized (this) {
             field = this.fields.get(key);
             if (field == null) {
-                final int requests = this.demand.merge(key, 1, Integer::sum);
-                if (requests < buildAfter) {
-                    return null;
-                }
+                this.demand.merge(key, 1, Integer::sum);
+                trim(this.demand, Math.max(16, limits.maximumFields() * 4));
+                return null;
             }
         }
-
-        if (field == null) {
-            field = build(provider, context, target, endpoints, maxRange, maximumCells);
+        if (!field.isCurrent(snapshotValidator)) {
             synchronized (this) {
-                this.fields.put(key, field);
-                this.demand.remove(key);
-                trim(this.fields, maximumFields);
+                if (this.fields.remove(key, field)) {
+                    this.demand.put(key, 1);
+                }
             }
-            ZvsPathfindingMetrics.flowFieldBuild(field.cells().size());
+            return null;
         }
         return field.toPath(start, target, maxRange, maxPathLength);
     }
 
-    private static FlowField build(
-        final PatheticNavigationPointProvider provider,
-        final PatheticEnvironmentContext context,
-        final BlockPos target,
-        final List<BlockPos> endpoints,
+    void record(
+        final ZvsSharedPathCache.PathProfile profile,
+        final Path path,
+        final int accuracy,
         final float maxRange,
-        final int maximumCells
+        final Function<long[], ZvsSharedPathCache.SectionSnapshot> snapshotFactory
     ) {
-        final HashMap<Long, Cell> cells = new HashMap<>(Math.min(maximumCells, 4_096));
-        final PriorityQueue<State> frontier = new PriorityQueue<>(Comparator.comparingDouble(State::cost));
-        for (final BlockPos endpoint : endpoints) {
-            final PatheticNavigationPoint point = provider.pointAt(
-                PathPosition.of(endpoint.getX(), endpoint.getY(), endpoint.getZ()), context
-            );
-            if (!point.isTraversable()) {
-                continue;
-            }
-            final long position = endpoint.asLong();
-            cells.put(position, new Cell(position, 0.0D, point.pathType(), point.malus()));
-            frontier.add(new State(position, 0.0D));
+        if (!path.canReach() || path.getNodeCount() < 2) {
+            return;
+        }
+        final Limits limits = limits();
+        if (!limits.enabled()) {
+            return;
         }
 
-        final int initialEvaluations = context.evaluationBudget().consumed();
-        final int buildEvaluationLimit = Math.max(1, context.evaluationBudget().remaining() / 2);
-        final double maximumDistanceSquared = (double)maxRange * maxRange;
-        while (!frontier.isEmpty()
-            && cells.size() < maximumCells
-            && context.evaluationBudget().consumed() - initialEvaluations < buildEvaluationLimit) {
-            final State current = frontier.remove();
-            final Cell currentCell = cells.get(current.position());
-            if (currentCell == null || current.cost() != currentCell.cost()) {
-                continue;
+        final Key key = key(profile, path.getTarget(), accuracy, maxRange);
+        synchronized (this) {
+            final FlowField existing = this.fields.get(key);
+            if (existing == null && this.demand.getOrDefault(key, 0) < limits.buildAfter()) {
+                return;
             }
-            final int currentX = BlockPos.getX(current.position());
-            final int currentY = BlockPos.getY(current.position());
-            final int currentZ = BlockPos.getZ(current.position());
-            for (int direction = 0; direction < CARDINAL_X.length && cells.size() < maximumCells; direction++) {
-                final int x = currentX + CARDINAL_X[direction];
-                final int z = currentZ + CARDINAL_Z[direction];
-                final double dx = x - target.getX();
-                final double dz = z - target.getZ();
-                if (dx * dx + dz * dz >= maximumDistanceSquared) {
-                    continue;
-                }
-                final long position = BlockPos.asLong(x, currentY, z);
-                final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(x, currentY, z), context);
-                if (!point.isTraversable()) {
-                    continue;
-                }
-                final double cost = current.cost() + 1.0D + Math.max(0.0F, point.malus());
+
+            final Map<Long, Cell> cells = existing == null
+                ? new HashMap<>(Math.min(limits.maximumCells(), path.getNodeCount() * 2))
+                : new HashMap<>(existing.cells());
+            double suffixCost = 0.0D;
+            long next = path.getNode(path.getNodeCount() - 1).asBlockPos().asLong();
+            for (int index = path.getNodeCount() - 1; index >= 0; index--) {
+                final Node node = path.getNode(index);
+                final long position = node.asBlockPos().asLong();
                 final Cell previous = cells.get(position);
-                if (previous != null && previous.cost() <= cost) {
-                    continue;
+                if (previous != null || cells.size() < limits.maximumCells()) {
+                    if (previous == null || suffixCost < previous.cost()) {
+                        cells.put(position, new Cell(next, suffixCost, node.type, node.costMalus));
+                    }
                 }
-                cells.put(position, new Cell(current.position(), cost, point.pathType(), point.malus()));
-                frontier.add(new State(position, cost));
+                next = position;
+                if (index > 0) {
+                    final Node prior = path.getNode(index - 1);
+                    suffixCost += prior.distanceTo(node) + Math.max(0.0F, node.costMalus);
+                }
             }
+            if (cells.size() < 2) {
+                return;
+            }
+            final FlowField merged = new FlowField(Map.copyOf(cells)).withSnapshot(snapshotFactory.apply(sections(cells)));
+            this.fields.put(key, merged);
+            this.demand.remove(key);
+            trim(this.fields, limits.maximumFields());
+            ZvsPathfindingMetrics.flowFieldBuild(cells.size());
         }
-        return new FlowField(Map.copyOf(cells));
+    }
+
+    synchronized int sizeForTesting() {
+        return this.fields.size();
+    }
+
+    private static Key key(
+        final ZvsSharedPathCache.PathProfile profile,
+        final BlockPos target,
+        final int accuracy,
+        final float maxRange
+    ) {
+        return new Key(profile, target.asLong(), accuracy, Math.max(1, (int)Math.ceil(maxRange)));
+    }
+
+    private static Limits limits() {
+        final GlobalConfiguration.Optimizations.PatheticMobPathfinding configuration =
+            GlobalConfiguration.get().optimizations.patheticMobPathfinding;
+        return new Limits(
+            Math.max(0, configuration.reverseFlowFieldBuildAfterRequests),
+            Math.max(0, configuration.reverseFlowFieldMaxCells),
+            Math.max(0, configuration.reverseFlowFieldCacheEntries)
+        );
     }
 
     private static <K, V> void trim(final LinkedHashMap<K, V> map, final int maximumEntries) {
@@ -143,7 +147,35 @@ final class ZvsReverseFlowFieldCache {
         }
     }
 
-    record FlowField(Map<Long, Cell> cells) {
+    private static long[] sections(final Map<Long, Cell> cells) {
+        final it.unimi.dsi.fastutil.longs.LongOpenHashSet sections =
+            new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (final long position : cells.keySet()) {
+            sections.add(SectionPos.asLong(
+                SectionPos.blockToSectionCoord(BlockPos.getX(position)),
+                SectionPos.blockToSectionCoord(BlockPos.getY(position)),
+                SectionPos.blockToSectionCoord(BlockPos.getZ(position))
+            ));
+        }
+        return sections.toLongArray();
+    }
+
+    record FlowField(
+        Map<Long, Cell> cells,
+        ZvsSharedPathCache.@Nullable SectionSnapshot snapshot
+    ) {
+        FlowField(final Map<Long, Cell> cells) {
+            this(cells, null);
+        }
+
+        FlowField withSnapshot(final ZvsSharedPathCache.SectionSnapshot snapshot) {
+            return new FlowField(this.cells, snapshot);
+        }
+
+        boolean isCurrent(final Predicate<ZvsSharedPathCache.SectionSnapshot> snapshotValidator) {
+            return this.snapshot == null || snapshotValidator.test(this.snapshot);
+        }
+
         @Nullable
         Path toPath(final Node start, final BlockPos target, final float maxRange, final int maxPathLength) {
             long position = start.asBlockPos().asLong();
@@ -151,7 +183,10 @@ final class ZvsReverseFlowFieldCache {
                 return null;
             }
             final List<Node> nodes = new ArrayList<>(Math.min(1_024, maxPathLength + 1));
+            final it.unimi.dsi.fastutil.longs.LongOpenHashSet visited =
+                new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
             nodes.add(start);
+            visited.add(position);
             Node previous = start;
             for (int steps = 0; steps < maxPathLength; steps++) {
                 final Cell cell = this.cells.get(position);
@@ -163,7 +198,7 @@ final class ZvsReverseFlowFieldCache {
                 }
                 final long nextPosition = cell.next();
                 final Cell next = this.cells.get(nextPosition);
-                if (next == null) {
+                if (next == null || next.cost() >= cell.cost() || !visited.add(nextPosition)) {
                     return null;
                 }
                 final Node node = new Node(BlockPos.getX(nextPosition), BlockPos.getY(nextPosition), BlockPos.getZ(nextPosition));
@@ -187,9 +222,12 @@ final class ZvsReverseFlowFieldCache {
     record Cell(long next, double cost, PathType pathType, float malus) {
     }
 
-    private record Key(int profile, long target, int accuracy, int range) {
+    private record Key(ZvsSharedPathCache.PathProfile profile, long target, int accuracy, int range) {
     }
 
-    private record State(long position, double cost) {
+    private record Limits(int buildAfter, int maximumCells, int maximumFields) {
+        boolean enabled() {
+            return this.buildAfter > 0 && this.maximumCells > 0 && this.maximumFields > 0;
+        }
     }
 }

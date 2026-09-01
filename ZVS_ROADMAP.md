@@ -43,9 +43,9 @@ Implement the mandatory navigation fast path in layers:
 1. Strict eligibility and safe upstream fallback.
 2. Straight-line and short orthogonal-detour checks on flat ground.
 3. A world navigation revision that changes when relevant blocks change.
-4. Shared 2D route caching keyed by objective cell and navigation revision.
-5. A reverse flow field for fixed objectives such as the core.
-6. Cached local routes for moving player objectives.
+4. A collision-safe navigation profile and section revision snapshots.
+5. A reverse next-hop field accumulated from successful fixed-objective routes.
+6. Vanilla-compatible `reached=false` partial paths for blocked flat searches.
 7. Per-reason counters for direct, detour, shared, and vanilla fallback paths.
 
 Stairs, jumps, drops, fluids, flying, amphibious navigation, and unsafe nodes
@@ -95,7 +95,8 @@ No PulseNet behavior is omitted solely because its source cannot be copied.
 - Queue normal PLAY writes and submit them through one event-loop task.
 - Consolidate tick flushes with count and byte safety limits.
 - Preserve packet order and every channel future listener.
-- Bundle already-reduced particle and sound packets.
+- Keep logical effect reduction above Netty; do not count a protocol bundle as
+  a physical write reduction when Paper immediately unpacks it.
 - Bypass buffering for protocol transitions and critical packets.
 - Add zero-copy frame decoding and in-place frame-prefix writing only after the
   write/flush path passes protocol and leak tests.
@@ -108,7 +109,11 @@ metrics parity with the selected PulseNet 26.2 reference revision.
 Throttle managed mob tracking per receiving player, not globally.
 
 - Full-rate updates for nearby, attacking, boss, and special entities.
-- Reduced movement/update cadence for medium and far entities.
+- Reduced movement/update cadence based on per-viewer emission counters.
+- Absolute movement packets for every thinned emission and bounded recovery
+  after a final dropped delta.
+- Lazy per-entity controller allocation so disabled and untagged entities keep
+  the upstream tracker allocation profile.
 - Immediate spawn, removal, teleport, equipment, and critical state changes.
 - Promotion to full rate before a mob can affect a player.
 - Metrics by distance tier and packet type.

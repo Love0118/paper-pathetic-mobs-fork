@@ -1,17 +1,14 @@
 package io.papermc.paper.optimization.pathfinding;
 
-import de.bsommerfeld.pathetic.api.pathing.INeighborStrategy;
-import de.bsommerfeld.pathetic.api.pathing.Pathfinder;
-import de.bsommerfeld.pathetic.api.pathing.configuration.PathfinderConfiguration;
-import de.bsommerfeld.pathetic.api.pathing.result.PathfinderResult;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
-import de.bsommerfeld.pathetic.api.wrapper.PathVector;
-import de.bsommerfeld.pathetic.engine.factory.AStarPathfinderFactory;
 import io.papermc.paper.configuration.GlobalConfiguration;
 import io.papermc.paper.optimization.pathfinding.ZvsPathfindingMetrics.RejectionReason;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.PriorityQueue;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Mob;
@@ -38,14 +35,8 @@ import org.jspecify.annotations.Nullable;
  */
 @NullMarked
 public final class PatheticMobPathfinding {
-    private static final AStarPathfinderFactory FACTORY = new AStarPathfinderFactory();
-    private static final List<PathVector> HORIZONTAL_CARDINAL_OFFSETS = List.of(
-        PathVector.of(1.0D, 0.0D, 0.0D),
-        PathVector.of(-1.0D, 0.0D, 0.0D),
-        PathVector.of(0.0D, 0.0D, 1.0D),
-        PathVector.of(0.0D, 0.0D, -1.0D)
-    );
-    private static final INeighborStrategy HORIZONTAL_CARDINAL = () -> HORIZONTAL_CARDINAL_OFFSETS;
+    private static final int[] CARDINAL_X = {1, -1, 0, 0};
+    private static final int[] CARDINAL_Z = {0, 0, 1, -1};
     private static final int MAX_FAST_DETOUR_OFFSET = 8;
     private static final int MAX_PATHETIC_WORK_UNITS = 100_000;
 
@@ -68,7 +59,13 @@ public final class PatheticMobPathfinding {
         final int maxVisitedNodes,
         final float searchDepthMultiplier
     ) {
-        if (!GlobalConfiguration.get().optimizations.patheticMobPathfinding.enabled) {
+        final GlobalConfiguration.Optimizations.PatheticMobPathfinding configuration =
+            GlobalConfiguration.get().optimizations.patheticMobPathfinding;
+        if (!configuration.enabled) {
+            return SearchResult.NOT_HANDLED;
+        }
+        if (!mob.entityTags().contains(configuration.markerTag)) {
+            ZvsPathfindingMetrics.reject(RejectionReason.MARKER_TAG);
             return SearchResult.NOT_HANDLED;
         }
 
@@ -90,17 +87,13 @@ public final class PatheticMobPathfinding {
         }
         ZvsPathfindingMetrics.attempt();
         final WalkNodeEvaluator walkNodeEvaluator = (WalkNodeEvaluator) nodeEvaluator;
-        final int pathProfile = ZvsSharedPathCache.profile(mob, walkNodeEvaluator);
+        final ZvsSharedPathCache.PathProfile pathProfile = ZvsSharedPathCache.profile(mob, walkNodeEvaluator);
         final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
-        final Path cachedPath = sharedPathCache.find(pathProfile, start, target, accuracy, maxRange);
-        if (cachedPath != null) {
-            ZvsPathfindingMetrics.result(ZvsPathfindingMetrics.Result.CACHED, 0, false);
-            return SearchResult.handled(cachedPath);
-        }
         final Path path = findGroundPath(
             region,
             mob,
             walkNodeEvaluator,
+            pathProfile,
             pathfindingContext,
             start,
             target,
@@ -109,12 +102,7 @@ public final class PatheticMobPathfinding {
             maxPathLength,
             evaluationBudget
         );
-        if (path != null) {
-            sharedPathCache.record(pathProfile, path, accuracy);
-        }
-        return SearchResult.handled(
-            path
-        );
+        return SearchResult.handled(path);
     }
 
     static boolean isEligible(
@@ -187,6 +175,7 @@ public final class PatheticMobPathfinding {
         final PathNavigationRegion region,
         final Mob mob,
         final WalkNodeEvaluator nodeEvaluator,
+        final ZvsSharedPathCache.PathProfile pathProfile,
         final PathfindingContext pathfindingContext,
         final Node start,
         final BlockPos target,
@@ -195,84 +184,86 @@ public final class PatheticMobPathfinding {
         final int maxPathLength,
         final int evaluationBudget
     ) {
-        final PatheticNavigationPointProvider provider = new PatheticNavigationPointProvider();
         final PatheticEnvironmentContext context = new PatheticEnvironmentContext(
             region, mob, nodeEvaluator, pathfindingContext, start, evaluationBudget
         );
+        final PatheticNavigationPointProvider provider = new PatheticNavigationPointProvider();
+        provider.seed(start);
         final List<BlockPos> endpoints = targetCandidates(start, target, accuracy);
-        final Path flowFieldPath = mob.level().zvs2DPathCache.findOrBuildFlowField(
-            ZvsSharedPathCache.profile(mob, nodeEvaluator), provider, context, start, target, endpoints,
-            accuracy, maxRange, maxPathLength
+        final ZvsSharedPathCache sharedPathCache = mob.level().zvs2DPathCache;
+        final Path flowFieldPath = sharedPathCache.findFlowField(
+            pathProfile, start, target, accuracy, maxRange, maxPathLength
         );
         if (flowFieldPath != null) {
             recordResult(ZvsPathfindingMetrics.Result.FLOW_FIELD, context);
             return flowFieldPath;
         }
+        Path bestPartial = null;
         for (final BlockPos endpoint : endpoints) {
             final Path directPath = findDirectGroundPath(provider, context, start, endpoint, target, maxRange);
             if (directPath != null) {
-                recordResult(ZvsPathfindingMetrics.Result.DIRECT, context);
-                return directPath;
+                if (directPath.canReach()) {
+                    recordResult(ZvsPathfindingMetrics.Result.DIRECT, context);
+                    sharedPathCache.recordFlowField(pathProfile, directPath, accuracy, maxRange);
+                    return directPath;
+                }
+                bestPartial = closerPartial(bestPartial, directPath, target);
             }
             if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
-                return null;
+                break;
             }
         }
 
-        for (final BlockPos endpoint : endpoints) {
+        for (final BlockPos endpoint : context.evaluationBudget().exhausted() ? List.<BlockPos>of() : endpoints) {
             final Path detourPath = findOrthogonalDetourGroundPath(
                 provider, context, start, endpoint, target, maxRange, maxPathLength
             );
             if (detourPath != null) {
                 recordResult(ZvsPathfindingMetrics.Result.DETOUR, context);
+                sharedPathCache.recordFlowField(pathProfile, detourPath, accuracy, maxRange);
                 return detourPath;
             }
             if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
-                return null;
+                break;
             }
         }
 
-        int remainingAStarIterations = context.evaluationBudget().remaining();
-        for (int index = 0; index < endpoints.size() && remainingAStarIterations > 0; index++) {
-            final BlockPos endpoint = endpoints.get(index);
-            final PatheticNavigationPoint endpointPoint = provider.pointAt(
-                PathPosition.of(endpoint.getX(), endpoint.getY(), endpoint.getZ()), context
-            );
-            if (!endpointPoint.isTraversable()) {
-                if (context.evaluationBudget().exhausted()) {
-                    recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
-                    return null;
-                }
-                continue;
+        final Path aStarPath = findAStarGroundPath(
+            provider, context, start, target, accuracy, maxRange, maxPathLength,
+            context.evaluationBudget().remaining()
+        );
+        final Path path = aStarPath != null && aStarPath.canReach()
+            ? aStarPath
+            : closerPartial(bestPartial, aStarPath, target);
+        if (path != null) {
+            final ZvsPathfindingMetrics.Result result = path.canReach()
+                ? ZvsPathfindingMetrics.Result.ASTAR
+                : ZvsPathfindingMetrics.Result.PARTIAL;
+            recordResult(result, context);
+            if (path.canReach()) {
+                sharedPathCache.recordFlowField(pathProfile, path, accuracy, maxRange);
             }
-
-            final int candidatesLeft = endpoints.size() - index;
-            final int iterationShare = Math.max(1, remainingAStarIterations / candidatesLeft);
-            final Path path = findAStarGroundPath(
-                provider,
-                context,
-                start,
-                endpoint,
-                target,
-                accuracy,
-                maxRange,
-                maxPathLength,
-                iterationShare
-            );
-            if (path != null) {
-                recordResult(ZvsPathfindingMetrics.Result.ASTAR, context);
-                return path;
-            }
-            if (context.evaluationBudget().exhausted()) {
-                recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
-                return null;
-            }
-            remainingAStarIterations -= iterationShare;
+            return path;
         }
         recordResult(ZvsPathfindingMetrics.Result.NO_PATH, context);
         return null;
+    }
+
+    @Nullable
+    private static Path closerPartial(
+        final @Nullable Path first,
+        final @Nullable Path second,
+        final BlockPos target
+    ) {
+        if (first == null) {
+            return second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return manhattanDistance(second.getEndNode(), target) < manhattanDistance(first.getEndNode(), target)
+            ? second
+            : first;
     }
 
     private static void recordResult(
@@ -291,43 +282,108 @@ public final class PatheticMobPathfinding {
         final PatheticNavigationPointProvider provider,
         final PatheticEnvironmentContext context,
         final Node start,
-        final BlockPos endpoint,
         final BlockPos target,
         final int accuracy,
         final float maxRange,
         final int maxPathLength,
         final int maxIterations
     ) {
-        final PathfinderConfiguration configuration = PathfinderConfiguration.builder()
-            .provider(provider)
-            .async(false)
-            .fallback(false)
-            .maxIterations(maxIterations)
-            .maxLength(maxPathLength)
-            .neighborStrategy(HORIZONTAL_CARDINAL)
-            .validationProcessors(List.of(evaluation -> {
-                final PatheticNavigationPoint point = provider.pointAt(evaluation.getCurrentPathPosition(), context);
-                return point.isTraversable();
-            }))
-            .costProcessor(List.of(evaluation -> {
-                final PatheticNavigationPoint point = provider.pointAt(evaluation.getCurrentPathPosition(), context);
-                return point.cost();
-            }))
-            .build();
-
-        final Pathfinder pathfinder = FACTORY.createPathfinder(configuration);
-        final PathPosition startPosition = PathPosition.of(start.x, start.y, start.z);
-        final PathPosition endPosition = PathPosition.of(endpoint.getX(), endpoint.getY(), endpoint.getZ());
-        final PathfinderResult result = pathfinder.findPath(startPosition, endPosition, context).resultBlocking();
-        if (context.evaluationBudget().exhausted()
-            || result == null
-            || !result.successful()
-            || result.getPath() == null
-            || result.getPath().length() <= 1) {
+        if (maxIterations <= 0) {
             return null;
         }
+        final PriorityQueue<AStarNode> frontier = new PriorityQueue<>(
+            Comparator.comparingDouble(AStarNode::score).thenComparingInt(AStarNode::heuristic)
+        );
+        final HashMap<Long, AStarNode> bestByPosition = new HashMap<>();
+        final int startHeuristic = horizontalHeuristic(start.x, start.z, target, accuracy);
+        final AStarNode startNode = new AStarNode(
+            start.asBlockPos().asLong(), start.x, start.y, start.z, 0.0D, startHeuristic, 0, null,
+            new PatheticNavigationPoint(true, de.bsommerfeld.pathetic.api.pathing.processing.Cost.ZERO, start.type, start.costMalus)
+        );
+        frontier.add(startNode);
+        bestByPosition.put(startNode.position(), startNode);
+        AStarNode best = startNode;
+        AStarNode reached = null;
+        int iterations = 0;
 
-        return toMinecraftPath(result.getPath(), provider, context, start, endpoint, target, accuracy, maxRange);
+        search:
+        while (!frontier.isEmpty() && iterations++ < maxIterations) {
+            final AStarNode current = frontier.remove();
+            if (bestByPosition.get(current.position()) != current) {
+                continue;
+            }
+            if (current.heuristic() == 0) {
+                reached = current;
+                break;
+            }
+            if (current.steps() >= maxPathLength) {
+                continue;
+            }
+            for (int direction = 0; direction < CARDINAL_X.length; direction++) {
+                final int x = current.x() + CARDINAL_X[direction];
+                final int z = current.z() + CARDINAL_Z[direction];
+                final int steps = current.steps() + 1;
+                if (steps >= maxRange) {
+                    continue;
+                }
+                final PatheticNavigationPoint point = provider.pointAt(
+                    PathPosition.of(x, current.y(), z), context
+                );
+                if (!point.isTraversable()) {
+                    if (context.evaluationBudget().exhausted()) {
+                        break search;
+                    }
+                    continue;
+                }
+                final double cost = current.cost() + 1.0D + Math.max(0.0F, point.malus());
+                final long position = BlockPos.asLong(x, current.y(), z);
+                final AStarNode previous = bestByPosition.get(position);
+                if (previous != null && previous.cost() <= cost) {
+                    continue;
+                }
+                final int heuristic = horizontalHeuristic(x, z, target, accuracy);
+                final AStarNode candidate = new AStarNode(
+                    position, x, current.y(), z, cost, heuristic, steps, current, point
+                );
+                bestByPosition.put(position, candidate);
+                frontier.add(candidate);
+                if (heuristic < best.heuristic()
+                    || heuristic == best.heuristic() && cost < best.cost()) {
+                    best = candidate;
+                }
+            }
+        }
+
+        final AStarNode result = reached != null ? reached : best;
+        if (result == startNode) {
+            return null;
+        }
+        final List<AStarNode> reversed = new ArrayList<>(result.steps() + 1);
+        for (AStarNode node = result; node != null; node = node.parent()) {
+            reversed.add(node);
+        }
+        Collections.reverse(reversed);
+        final List<Node> nodes = new ArrayList<>(reversed.size());
+        nodes.add(start);
+        Node previous = start;
+        for (int index = 1; index < reversed.size(); index++) {
+            final AStarNode pathNode = reversed.get(index);
+            final Node node = nodeForPoint(
+                pathNode.x(), pathNode.y(), pathNode.z(), pathNode.point(), previous
+            );
+            nodes.add(node);
+            previous = node;
+        }
+        return new Path(nodes, target, reached != null);
+    }
+
+    private static int horizontalHeuristic(
+        final int x,
+        final int z,
+        final BlockPos target,
+        final int accuracy
+    ) {
+        return Math.max(0, Math.abs(x - target.getX()) + Math.abs(z - target.getZ()) - accuracy);
     }
 
     static List<BlockPos> targetCandidates(final Node start, final BlockPos target, final int accuracy) {
@@ -367,25 +423,30 @@ public final class PatheticMobPathfinding {
             final int z = start.z + Math.round((float) deltaZ * (float) i / (float) steps);
             final PatheticNavigationPoint point = provider.pointAt(PathPosition.of(x, start.y, z), context);
             if (!isZeroCost(point)) {
-                return null;
+                return partialPath(nodes, pathTarget);
             }
 
             final boolean diagonal = previous.x != x && previous.z != z;
             if (diagonal && (!isSafeDiagonalSide(provider, context, previous.x, start.y, z)
                 || !isSafeDiagonalSide(provider, context, x, start.y, previous.z)
                 || point.pathType() == PathType.WALKABLE_DOOR)) {
-                return null;
+                return partialPath(nodes, pathTarget);
             }
 
             final Node node = nodeForPoint(x, start.y, z, point, previous);
             if (node.walkedDistance >= maxRange) {
-                return null;
+                return partialPath(nodes, pathTarget);
             }
             nodes.add(node);
             previous = node;
         }
 
         return new Path(nodes, pathTarget, true);
+    }
+
+    @Nullable
+    static Path partialPath(final List<Node> nodes, final BlockPos target) {
+        return nodes.size() > 1 ? new Path(List.copyOf(nodes), target, false) : null;
     }
 
     private static boolean isSafeDiagonalSide(
@@ -655,6 +716,22 @@ public final class PatheticMobPathfinding {
 
     private static int boundedInitialCapacity(final int requested) {
         return Math.min(1024, Math.max(4, requested));
+    }
+
+    private record AStarNode(
+        long position,
+        int x,
+        int y,
+        int z,
+        double cost,
+        int heuristic,
+        int steps,
+        @Nullable AStarNode parent,
+        PatheticNavigationPoint point
+    ) {
+        double score() {
+            return this.cost + this.heuristic;
+        }
     }
 
     /**

@@ -123,7 +123,7 @@ index ac095f59d9f17d8239d6493d1c1e3942139b039f..d3d3f78eb634a0802e8ebea768a66604
  
      @Override
 diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
-index 9fbc7e93712672dbab67f931e2aee447d803607b..135d2821957bd5d89f99c99c2c0ba1514c208ad7 100644
+index 9fbc7e93712672dbab67f931e2aee447d803607b..cb7523930c063f2e7c1f7ac3f8e23dbc74f28790 100644
 --- a/net/minecraft/network/Connection.java
 +++ b/net/minecraft/network/Connection.java
 @@ -65,6 +65,8 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
@@ -135,7 +135,7 @@ index 9fbc7e93712672dbab67f931e2aee447d803607b..135d2821957bd5d89f99c99c2c0ba151
      private final Queue<WrappedConsumer> pendingActions = Queues.newConcurrentLinkedQueue(); // Paper - Optimize network
      public Channel channel;
      public SocketAddress address;
-@@ -344,7 +346,25 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -344,7 +346,27 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
          }
  
          boolean isLoginProtocol = protocol.id() == ConnectionProtocol.LOGIN;
@@ -145,11 +145,13 @@ index 9fbc7e93712672dbab67f931e2aee447d803607b..135d2821957bd5d89f99c99c2c0ba151
 +            this.sendLoginDisconnect = isLoginProtocol;
 +            this.zvsPlayProtocol = isPlayProtocol;
 +            final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++            io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.configure(
++                configuration != null && configuration.optimizations.zvsPlayNetwork.metricsEnabled
++            );
 +            if (isPlayProtocol && configuration != null && configuration.optimizations.zvsPlayNetwork.enabled) {
 +                final io.papermc.paper.configuration.GlobalConfiguration.Optimizations.ZvsPlayNetwork network = configuration.optimizations.zvsPlayNetwork;
 +                this.zvsPlayWriteQueue = new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue(
-+                    ctx.executor(), ctx.executor()::inEventLoop, network.maxPacketsPerFlush, network.maxEstimatedBytesPerFlush,
-+                    network.bundleEffects ? network.maxEffectBundlePackets : 1, network.bundleEffects ? this::doSendEffectBundle : null
++                    ctx.executor(), ctx.executor()::inEventLoop, network.maxPacketsPerFlush, network.maxEstimatedBytesPerFlush
 +                );
 +            } else {
 +                final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
@@ -162,96 +164,54 @@ index 9fbc7e93712672dbab67f931e2aee447d803607b..135d2821957bd5d89f99c99c2c0ba151
      }
  
      public void setListenerForServerboundHandshake(final PacketListener packetListener) {
-@@ -487,7 +507,20 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
-         if (this.channel.eventLoop().inEventLoop()) {
+@@ -484,11 +506,23 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+ 
+     private void sendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
+         this.sentPackets++;
+-        if (this.channel.eventLoop().inEventLoop()) {
++        // Paper start - preserve ZVS PLAY write order across all calling threads
++        final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
++        if (this.zvsPlayProtocol && queue != null) {
++            final io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Classification classification =
++                io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.classify(packet, flush);
++            final net.minecraft.server.level.ServerPlayer player = this.getPlayer();
++            queue.enqueue(new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry(
++                forceFlush -> this.doSendPacket(packet, listener, forceFlush),
++                () -> packet.onPacketDispatchFinish(player, null),
++                classification.barrier(), classification.estimatedBytes()
++            ));
++        } else if (this.channel.eventLoop().inEventLoop()) {
              this.doSendPacket(packet, listener, flush);
          } else {
--            this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
-+            final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
-+            if (this.zvsPlayProtocol && queue != null) {
-+                final io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.Classification classification =
-+                    io.papermc.paper.optimization.zvs.network.ZvsPacketBatchClassifier.classify(packet, flush);
-+                final net.minecraft.server.level.ServerPlayer player = this.getPlayer();
-+                queue.enqueue(new io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry(
-+                    forceFlush -> this.doSendPacket(packet, listener, forceFlush),
-+                    () -> packet.onPacketDispatchFinish(player, null),
-+                    classification.barrier(), classification.estimatedBytes(), new ZvsQueuedPacket(packet, listener, player),
-+                    classification.effectBundleCandidate()
-+                ));
-+            } else {
-+                this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
-+            }
+             this.channel.eventLoop().execute(() -> this.doSendPacket(packet, listener, flush));
          }
++        // Paper end - preserve ZVS PLAY write order across all calling threads
      }
  
-@@ -523,9 +556,65 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
-         // Paper end - Optimize network
-     }
+     private void doSendPacket(final Packet<?> packet, final @Nullable ChannelFutureListener listener, final boolean flush) {
+@@ -509,6 +543,7 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         } else {
+             future = this.channel.write(packet, this.channel.voidPromise()); // Paper - Optimize network
+         }
++        io.papermc.paper.optimization.zvs.network.ZvsNetworkMetrics.channelWrite();
  
-+    @SuppressWarnings("unchecked")
-+    private void doSendEffectBundle(final java.util.List<io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry> entries, final boolean flush) {
-+        if (!this.isConnected()) {
-+            for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
-+                final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
-+                queued.packet().onPacketDispatchFinish(queued.player(), null);
-+            }
-+            return;
-+        }
-+
-+        final java.util.List<Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>> packets = new java.util.ArrayList<>(entries.size());
-+        boolean needsFuture = false;
-+        for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
-+            final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
-+            packets.add((Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>)queued.packet());
-+            needsFuture |= queued.listener() != null || queued.packet().hasFinishListener();
-+        }
-+
-+        try {
-+            final net.minecraft.network.protocol.game.ClientboundBundlePacket bundle = new net.minecraft.network.protocol.game.ClientboundBundlePacket(packets);
-+            final ChannelFuture future;
-+            if (needsFuture) {
-+                future = flush ? this.channel.writeAndFlush(bundle) : this.channel.write(bundle);
-+            } else if (flush) {
-+                future = this.channel.writeAndFlush(bundle, this.channel.voidPromise());
-+            } else {
-+                future = this.channel.write(bundle, this.channel.voidPromise());
-+            }
-+            if (needsFuture) {
-+                for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
-+                    final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
-+                    if (queued.listener() != null) {
-+                        future.addListener(queued.listener());
-+                    }
-+                    if (queued.packet().hasFinishListener()) {
-+                        future.addListener((ChannelFutureListener)completed -> queued.packet().onPacketDispatchFinish(queued.player(), completed));
-+                    }
-+                }
-+            }
-+        } catch (final Exception exception) {
-+            LOGGER.error("NetworkException while writing ZVS effect bundle", exception);
-+            for (final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue.Entry entry : entries) {
-+                final ZvsQueuedPacket queued = (ZvsQueuedPacket)entry.payload();
-+                queued.packet().onPacketDispatchFinish(queued.player(), null);
-+            }
-+            final Component reason = Component.translatable("disconnect.genericReason", "Internal Exception: " + exception.getMessage());
-+            this.send(new ClientboundDisconnectPacket(reason), PacketSendListener.thenRun(() -> this.disconnect(reason)));
-+        }
-+    }
-+
-+    private record ZvsQueuedPacket(Packet<?> packet, @Nullable ChannelFutureListener listener, net.minecraft.server.level.@Nullable ServerPlayer player) {
-+    }
-+
+         // Paper start - Optimize network
+         if (packet.hasFinishListener()) {
+@@ -525,6 +560,13 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+ 
      public void flushChannel() {
          if (this.isConnected()) {
--            this.flush();
 +            final io.papermc.paper.optimization.zvs.network.ZvsPlayWriteQueue queue = this.zvsPlayWriteQueue;
-+            if (queue == null || this.channel.eventLoop().inEventLoop() || !queue.hasScheduledWrites()) {
-+                this.flush();
++            if (queue != null && queue.hasScheduledWrites()) {
++                if (this.channel.eventLoop().inEventLoop()) {
++                    queue.drainNow();
++                }
++                return;
 +            }
+             this.flush();
          } else {
              this.pendingActions.add(new WrappedConsumer(Connection::flush)); // Paper - Optimize network
-         }
-@@ -921,6 +1010,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+@@ -921,6 +963,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
  
      // Paper start - Optimize network
      public void clearPacketQueue() {

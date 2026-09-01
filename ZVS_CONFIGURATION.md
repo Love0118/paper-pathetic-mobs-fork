@@ -7,17 +7,19 @@ the beta defaults used to build the candidate jar.
 ## `pathetic-mob-pathfinding`
 
 - `enabled: true`
-- `shared-route-cache-entries: 16384`
-- `shared-route-max-path-nodes: 256`
+- `marker-tag: zvs_managed`
 - `reverse-flow-field-build-after-requests: 4`
 - `reverse-flow-field-max-cells: 4096`
 - `reverse-flow-field-cache-entries: 64`
 
-Only exact flat `WalkNodeEvaluator` requests use the 2D engine. Unsupported
+Only tagged, exact flat `WalkNodeEvaluator` requests use the 2D engine. Unsupported
 terrain, vertical movement, fluids, other evaluators, and pre-evaluation
 rejections use upstream Paper. Once 2D evaluates the world, its bounded result
-is authoritative; vanilla is not run a second time. Block changes invalidate
-route and flow-field caches.
+is authoritative; vanilla is not run a second time. A blocked search returns
+the closest discovered node as `reached=false`, matching vanilla partial-path
+behavior. Successful fixed-objective routes merge into one reverse next-hop
+field without a synchronous Dijkstra build or a duplicate suffix cache. Block
+changes invalidate only overlapping dependency sections.
 
 ## `zvs-managed-damage`
 
@@ -30,42 +32,58 @@ route and flow-field caches.
 
 `compatibility` dispatches normal Bukkit events. `hybrid` dispatches the first
 managed damage event per target/tick. `trusted` skips managed damage events and
-uses the registered plugin death handler. Only main-thread calls for tagged
+uses the owner-checked registered plugin death handler. Trusted hits bypass
+damage-event and modifier-map allocation after vanilla damage modifiers have
+been calculated. Only main-thread calls for tagged
 entities enter this path; all other calls fall back to Bukkit. Use `trusted`
-only when every plugin that relies on per-hit Bukkit events has been audited.
+only when every plugin that relies on per-hit Bukkit events has been audited;
+the server logs a warning when suppression is first used. The versioned
+`@ApiStatus.Internal` contract is `io.papermc.paper.zvs.ZvsOptimization`
+(`API_VERSION = 2`).
 
 ## `zvs-play-network`
 
-- `enabled: true`
+- `enabled: false`
 - `max-packets-per-flush: 1024`
-- `max-estimated-bytes-per-flush: 32768`
-- `bundle-effects: true`
-- `max-effect-bundle-packets: 4000`
+- `max-estimated-bytes-per-flush: 0`
+- `metrics-enabled: false`
 - `zero-copy-decoding: true`
 - `in-place-frame-prefix: true`
 
-The queue is active only in PLAY. Login and configuration remain on upstream
-paths. Keepalive, disconnect, custom payload, damage, chunks, chat, teleport,
-removal, existing bundles, and caller-requested flushes are barriers. Safe
-in-place framing automatically falls back to a copy for shared, wrapped,
-composite, sliced, or read-only buffers.
+The queue is active only in PLAY when explicitly enabled. Login and
+configuration remain on upstream paths. A caller's normal `flush=true` request
+is folded into the end of the current drained burst and is not an ordering
+barrier. Protocol/latency-critical packets remain barriers. Every logical
+packet still performs its normal encoder/channel write; the removed
+`ClientboundBundlePacket` path did not reduce physical writes because Paper's
+unbundler expanded it again. Metrics therefore report actual channel writes,
+not bundle groups. The heuristic byte limit is disabled by default because
+encoded size is unknown at classification time. Safe in-place framing
+automatically falls back to a copy for shared, wrapped, composite, sliced, or
+read-only buffers.
 
 ## `zvs-entity-network-lod`
 
-- `enabled: true`
+- `enabled: false`
 - `marker-tag: zvs_managed`
 - `near-distance: 32`
 - `medium-distance: 64`
 - `medium-interval: 2`
 - `far-interval: 4`
+- `max-recovery-ticks: 20`
+- `metrics-enabled: false`
 - `full-rate-tag: zvs_lod_full`
 
 Only relative movement and head rotation of tagged mobs are throttled per
-viewer. Near mobs, Withers, Ender Dragons, mobs targeting that viewer, and mobs
-with `zvs_lod_full` remain full rate. Spawn, removal, absolute teleport,
-equipment, velocity, metadata, and other critical state remain immediate.
-Throttled relative movement is replaced by an absolute resync when its cadence
-allows transmission.
+viewer. Cadence counts actual `ServerEntity` emissions per entity/viewer, so it
+cannot starve through a tick-modulus GCD. Every permitted thinned movement is
+an absolute position sync, and a final skipped update receives a bounded
+absolute recovery even if the mob stops moving. A near/full-rate transition
+after skipped deltas also starts with an absolute sync. Spawn, removal,
+teleport, equipment, velocity, metadata, and other critical state remain
+immediate. The controller and its per-viewer identity map are allocated lazily
+only after both the feature and marker tag opt in; the default-disabled and
+untagged paths do not run recovery scans or allocate LOD state.
 
 ## Plugin effect frame
 

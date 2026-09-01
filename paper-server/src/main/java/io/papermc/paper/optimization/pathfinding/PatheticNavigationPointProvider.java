@@ -7,6 +7,7 @@ import de.bsommerfeld.pathetic.api.provider.NavigationPointProvider;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -25,6 +26,14 @@ final class PatheticNavigationPointProvider implements NavigationPointProvider {
     @Override
     public NavigationPoint getNavigationPoint(final PathPosition pathPosition, final EnvironmentContext environmentContext) {
         return this.pointAt(pathPosition, (PatheticEnvironmentContext) environmentContext);
+    }
+
+    void seed(final Node start) {
+        final float malus = start.costMalus;
+        this.cache.put(
+            start.asBlockPos().asLong(),
+            new PatheticNavigationPoint(true, malus > 0.0F ? Cost.of(malus) : Cost.ZERO, start.type, malus)
+        );
     }
 
     PatheticNavigationPoint pointAt(final PathPosition pathPosition, final PatheticEnvironmentContext context) {

@@ -16,10 +16,12 @@ public final class ZvsPathfindingMetrics {
         DIRECT,
         DETOUR,
         ASTAR,
+        PARTIAL,
         NO_PATH
     }
 
     public enum RejectionReason {
+        MARKER_TAG,
         EVALUATOR,
         TARGET_COUNT,
         ACCURACY,

@@ -142,6 +142,27 @@ class ZvsManagedDamageTest {
         );
     }
 
+    @Test
+    void deathHandlerOwnershipPreventsSilentGlobalSlotReplacement() {
+        ZvsManagedLifecycle.resetForTesting();
+        final Object firstOwner = new Object();
+        final Object secondOwner = new Object();
+        try {
+            ZvsManagedLifecycle.registerDeathHandler(firstOwner, ignored -> {});
+            assertThrows(
+                IllegalStateException.class,
+                () -> ZvsManagedLifecycle.registerDeathHandler(secondOwner, ignored -> {})
+            );
+            ZvsManagedLifecycle.unregisterDeathHandler(secondOwner);
+            assertThrows(
+                IllegalStateException.class,
+                () -> ZvsManagedLifecycle.registerDeathHandler(secondOwner, ignored -> {})
+            );
+        } finally {
+            ZvsManagedLifecycle.unregisterDeathHandler(firstOwner);
+        }
+    }
+
     private static LivingEntity managedTarget(
         final int entityId,
         final AtomicReference<Double> health,
