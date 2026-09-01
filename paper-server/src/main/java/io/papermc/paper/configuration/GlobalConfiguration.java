@@ -122,6 +122,12 @@ public class GlobalConfiguration extends ConfigurationPart {
             public int sharedRouteCacheEntries = 16_384;
             @Comment("Maximum number of nodes from one successful path that can populate the shared route cache.")
             public int sharedRouteMaxPathNodes = 256;
+            @Comment("Build a reverse flow field after this many requests for the same fixed objective. Set to 0 to disable.")
+            public int reverseFlowFieldBuildAfterRequests = 4;
+            @Comment("Maximum evaluated cells stored by one reverse flow field.")
+            public int reverseFlowFieldMaxCells = 4_096;
+            @Comment("Maximum fixed-objective reverse flow fields cached per world.")
+            public int reverseFlowFieldCacheEntries = 64;
         }
 
         public class ZvsManagedDamage extends ConfigurationPart {

@@ -33,15 +33,19 @@ also pass.
   evaluation; verify handled-no-path dispatch with a regression test.
 - [x] Add navigation revision invalidation for relevant block changes.
 - [x] Implement shared fixed-objective route-suffix caching.
-- [ ] Implement a bounded reverse flow field for dense fixed-objective traffic.
+- [x] Implement a demand-triggered, bounded reverse flow field for dense
+  fixed-objective traffic, sharing its evaluation cache with the current 2D
+  request so it never launches a second pathfinder.
 - [x] Implement exact-target cached moving-objective route suffixes.
-- [ ] Add unit tests for flat, blocked, hazardous, vertical, fluid, and fallback
+- [x] Add unit tests for flat, blocked, hazardous, vertical, fluid, and fallback
   cases.
 - [x] Add and pass eligibility, range, target-candidate, path-type, evaluation
   budget, rejection-reason, and metrics unit tests.
 - [x] Reapply the generated feature patch and pass the full Paper `gradlew build`.
 - [x] Reapply the handled-result/cache feature patch and pass the full Paper
   `gradlew build` (31 tasks, 2026-09-01).
+- [x] Add reverse-flow construction/cycle tests and pass the full 31-task Paper
+  build (2026-09-01).
 - [ ] Pass 2,000/5,000-mob correctness and performance smoke tests.
 
 ## 2. Managed damage, spawn, and death pipeline

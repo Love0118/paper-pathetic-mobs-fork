@@ -200,6 +200,14 @@ public final class PatheticMobPathfinding {
             region, mob, nodeEvaluator, pathfindingContext, start, evaluationBudget
         );
         final List<BlockPos> endpoints = targetCandidates(start, target, accuracy);
+        final Path flowFieldPath = mob.level().zvs2DPathCache.findOrBuildFlowField(
+            ZvsSharedPathCache.profile(mob, nodeEvaluator), provider, context, start, target, endpoints,
+            accuracy, maxRange, maxPathLength
+        );
+        if (flowFieldPath != null) {
+            recordResult(ZvsPathfindingMetrics.Result.FLOW_FIELD, context);
+            return flowFieldPath;
+        }
         for (final BlockPos endpoint : endpoints) {
             final Path directPath = findDirectGroundPath(provider, context, start, endpoint, target, maxRange);
             if (directPath != null) {

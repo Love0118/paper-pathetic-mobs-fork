@@ -12,6 +12,7 @@ import org.jspecify.annotations.NullMarked;
 public final class ZvsPathfindingMetrics {
     public enum Result {
         CACHED,
+        FLOW_FIELD,
         DIRECT,
         DETOUR,
         ASTAR,
@@ -35,6 +36,8 @@ public final class ZvsPathfindingMetrics {
     private static final LongAdder EVALUATIONS = new LongAdder();
     private static final LongAdder EXHAUSTED = new LongAdder();
     private static final LongAdder INVALIDATIONS = new LongAdder();
+    private static final LongAdder FLOW_FIELD_BUILDS = new LongAdder();
+    private static final LongAdder FLOW_FIELD_CELLS = new LongAdder();
     private static final LongAdder[] RESULTS = adders(Result.values().length);
     private static final LongAdder[] REJECTIONS = adders(RejectionReason.values().length);
 
@@ -61,6 +64,11 @@ public final class ZvsPathfindingMetrics {
         INVALIDATIONS.increment();
     }
 
+    static void flowFieldBuild(final int cells) {
+        FLOW_FIELD_BUILDS.increment();
+        FLOW_FIELD_CELLS.add(Math.max(0, cells));
+    }
+
     public static Snapshot snapshot() {
         final EnumMap<Result, Long> results = new EnumMap<>(Result.class);
         for (final Result result : Result.values()) {
@@ -75,6 +83,8 @@ public final class ZvsPathfindingMetrics {
             EVALUATIONS.sum(),
             EXHAUSTED.sum(),
             INVALIDATIONS.sum(),
+            FLOW_FIELD_BUILDS.sum(),
+            FLOW_FIELD_CELLS.sum(),
             Map.copyOf(results),
             Map.copyOf(rejections)
         );
@@ -85,6 +95,8 @@ public final class ZvsPathfindingMetrics {
         EVALUATIONS.reset();
         EXHAUSTED.reset();
         INVALIDATIONS.reset();
+        FLOW_FIELD_BUILDS.reset();
+        FLOW_FIELD_CELLS.reset();
         for (final LongAdder counter : RESULTS) {
             counter.reset();
         }
@@ -106,6 +118,8 @@ public final class ZvsPathfindingMetrics {
         long evaluations,
         long exhausted,
         long invalidations,
+        long flowFieldBuilds,
+        long flowFieldCells,
         Map<Result, Long> results,
         Map<RejectionReason, Long> rejections
     ) {

@@ -2,6 +2,7 @@ package io.papermc.paper.optimization.pathfinding;
 
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.pathfinder.AmphibiousNodeEvaluator;
@@ -85,6 +86,21 @@ class PatheticMobPathfindingTest {
             ),
             supported
         );
+    }
+
+    @Test
+    void blockedAndFluidStartsFallBackWhileSupportedHazardsStayIn2D() {
+        final Set<BlockPos> target = Set.of(new BlockPos(4, 64, 0));
+        final Node blocked = walkableNode(0, 64, 0);
+        blocked.type = PathType.BLOCKED;
+        final Node fluid = walkableNode(0, 64, 0);
+        fluid.type = PathType.WATER;
+        final Node hazard = walkableNode(0, 64, 0);
+        hazard.type = PathType.DAMAGING;
+
+        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), blocked, target, 8.0F, 0));
+        assertFalse(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), fluid, target, 8.0F, 0));
+        assertTrue(PatheticMobPathfinding.isEligible(new WalkNodeEvaluator(), hazard, target, 8.0F, 0));
     }
 
     @Test
@@ -187,6 +203,30 @@ class PatheticMobPathfindingTest {
         assertEquals(previousRevision + 1, cache.revision());
         assertEquals(0, cache.sizeForTesting());
         assertNull(cache.find(17, walkableNode(1, 64, 0), target, 0, 8.0F));
+    }
+
+    @Test
+    void reverseFlowFieldBuildsAnOrderedSuffixAndRejectsCycles() {
+        final BlockPos target = new BlockPos(2, 64, 0);
+        final long startPosition = BlockPos.asLong(0, 64, 0);
+        final long middlePosition = BlockPos.asLong(1, 64, 0);
+        final long targetPosition = target.asLong();
+        final ZvsReverseFlowFieldCache.FlowField field = new ZvsReverseFlowFieldCache.FlowField(Map.of(
+            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F),
+            middlePosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 1.0D, PathType.WALKABLE, 0.0F),
+            targetPosition, new ZvsReverseFlowFieldCache.Cell(targetPosition, 0.0D, PathType.WALKABLE, 0.0F)
+        ));
+
+        final net.minecraft.world.level.pathfinder.Path path = field.toPath(walkableNode(0, 64, 0), target, 8.0F, 8);
+        assertNotNull(path);
+        assertEquals(3, path.getNodeCount());
+        assertEquals(target, path.getEndNode().asBlockPos());
+
+        final ZvsReverseFlowFieldCache.FlowField cycle = new ZvsReverseFlowFieldCache.FlowField(Map.of(
+            startPosition, new ZvsReverseFlowFieldCache.Cell(middlePosition, 2.0D, PathType.WALKABLE, 0.0F),
+            middlePosition, new ZvsReverseFlowFieldCache.Cell(startPosition, 1.0D, PathType.WALKABLE, 0.0F)
+        ));
+        assertNull(cycle.toPath(walkableNode(0, 64, 0), target, 8.0F, 8));
     }
 
     private static Node walkableNode(final int x, final int y, final int z) {

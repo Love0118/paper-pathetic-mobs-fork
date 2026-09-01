@@ -26,6 +26,7 @@ import org.jspecify.annotations.Nullable;
 @NullMarked
 public final class ZvsSharedPathCache {
     private final LinkedHashMap<Key, CachedPath> routes = new LinkedHashMap<>(256, 0.75F, true);
+    private final ZvsReverseFlowFieldCache flowFields = new ZvsReverseFlowFieldCache();
     private long revision;
 
     public synchronized void invalidate() {
@@ -33,6 +34,7 @@ public final class ZvsSharedPathCache {
         if (!this.routes.isEmpty()) {
             this.routes.clear();
         }
+        this.flowFields.invalidate();
         ZvsPathfindingMetrics.invalidation();
     }
 
@@ -88,6 +90,23 @@ public final class ZvsSharedPathCache {
             }
             this.trimTo(maximumEntries);
         }
+    }
+
+    @Nullable
+    Path findOrBuildFlowField(
+        final int profile,
+        final PatheticNavigationPointProvider provider,
+        final PatheticEnvironmentContext context,
+        final Node start,
+        final BlockPos target,
+        final List<BlockPos> endpoints,
+        final int accuracy,
+        final float maxRange,
+        final int maxPathLength
+    ) {
+        return this.flowFields.findOrBuild(
+            profile, provider, context, start, target, endpoints, accuracy, maxRange, maxPathLength
+        );
     }
 
     synchronized int sizeForTesting() {
