@@ -60,9 +60,10 @@ fun optionalInclude(name: String, op: (ProjectDescriptor.() -> Unit)? = null) {
 gradle.lifecycle.beforeProject {
     val mcVersion = providers.gradleProperty("mcVersion").get().trim()
     val paperVersionChannel = providers.gradleProperty("channel").get().trim()
+    val paperBaseBuildNumber = providers.gradleProperty("paperBaseBuildNumber").get().trim().toInt()
     val paperBuildNumber = providers.environmentVariable("BUILD_NUMBER").orNull?.trim()?.toInt()
     val versionString = if (paperBuildNumber == null) {
-        "$mcVersion.local-SNAPSHOT"
+        "$mcVersion.build.$paperBaseBuildNumber-local"
     } else {
         "$mcVersion.build.$paperBuildNumber-${paperVersionChannel.lowercase()}"
     }
