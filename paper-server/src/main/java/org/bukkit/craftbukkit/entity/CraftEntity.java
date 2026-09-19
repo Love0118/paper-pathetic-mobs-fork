@@ -293,6 +293,23 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
         return this.teleport(location, TeleportCause.PLUGIN);
     }
 
+    /** Optional MUD bridge for continuous motion; not a general teleport API. */
+    public boolean mudMovePresentation(final Location location) {
+        location.checkFinite();
+        final Entity handle = this.getHandle();
+        if (!io.papermc.paper.optimization.mud.MudPresentation.skipGameplayTick(handle)
+            || !handle.valid || !this.getWorld().equals(location.getWorld())
+            || !this.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) {
+            return false;
+        }
+        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("MUD motion must run on the server thread");
+        handle.setPos(location.getX(), location.getY(), location.getZ());
+        handle.setYRot(location.getYaw());
+        handle.setYHeadRot(location.getYaw());
+        handle.setXRot(location.getPitch());
+        return true;
+    }
+
     @Override
     public boolean teleport(Location location, TeleportCause cause) {
         return teleport(location, cause, new TeleportFlag[0]);

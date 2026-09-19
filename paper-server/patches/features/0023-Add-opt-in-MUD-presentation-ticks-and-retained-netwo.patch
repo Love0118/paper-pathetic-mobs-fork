@@ -1,0 +1,281 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 00:05:31 +0900
+Subject: [PATCH] Add opt-in MUD presentation ticks and retained network
+ framing
+
+
+diff --git a/net/minecraft/network/CompressionDecoder.java b/net/minecraft/network/CompressionDecoder.java
+index ddd5daf92d03dd343e6164d55fff638509175e6d..87d6a6c03d83df03bf0e41b0b156fbaa8feeb9a6 100644
+--- a/net/minecraft/network/CompressionDecoder.java
++++ b/net/minecraft/network/CompressionDecoder.java
+@@ -17,24 +17,35 @@ public class CompressionDecoder extends ByteToMessageDecoder {
+     private int threshold;
+     private boolean validateDecompressed;
+ 
++    private final boolean mudZeroCopyPassthrough;
++
+     // Paper start - Use Velocity cipher
+     @io.papermc.paper.annotation.DoNotUse
+     public CompressionDecoder(final int threshold, final boolean validateDecompressed) {
+-        this(null, threshold, validateDecompressed);
++        this(null, threshold, validateDecompressed, mudZeroCopyEnabled());
+     }
+     public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed) {
++        this(compressor, threshold, validateDecompressed, mudZeroCopyEnabled());
++    }
++    public CompressionDecoder(final com.velocitypowered.natives.compression.VelocityCompressor compressor, final int threshold, final boolean validateDecompressed, final boolean zeroCopyPassthrough) {
+         this.threshold = threshold;
+         this.validateDecompressed = validateDecompressed;
+         this.inflater = compressor == null ? new Inflater() : null;
+         this.compressor = compressor;
++        this.mudZeroCopyPassthrough = zeroCopyPassthrough;
+         // Paper end - Use Velocity cipher
+     }
+ 
++    private static boolean mudZeroCopyEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.mudOptimizations.retainedFrames;
++    }
++
+     @Override
+     protected void decode(final ChannelHandlerContext ctx, final ByteBuf in, final List<Object> out) throws Exception {
+         int uncompressedLength = VarInt.read(in);
+         if (uncompressedLength == 0) {
+-            out.add(in.readBytes(in.readableBytes()));
++            out.add(this.mudZeroCopyPassthrough ? in.readRetainedSlice(in.readableBytes()) : in.readBytes(in.readableBytes()));
+         } else {
+             if (this.validateDecompressed) {
+                 if (uncompressedLength < this.threshold) {
+diff --git a/net/minecraft/network/CompressionEncoder.java b/net/minecraft/network/CompressionEncoder.java
+index ac095f59d9f17d8239d6493d1c1e3942139b039f..9ced48391d3d5318d1aa55ef5bb22a776c87d776 100644
+--- a/net/minecraft/network/CompressionEncoder.java
++++ b/net/minecraft/network/CompressionEncoder.java
+@@ -11,11 +11,16 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     private final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor; // Paper - Use Velocity cipher
+     private int threshold;
+ 
++    private final boolean mudReserveFramePrefix;
++
+     // Paper start - Use Velocity cipher
+     public CompressionEncoder(final int threshold) {
+-        this(null, threshold);
++        this(null, threshold, mudInPlacePrefixEnabled());
+     }
+     public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold) {
++        this(compressor, threshold, mudInPlacePrefixEnabled());
++    }
++    public CompressionEncoder(final com.velocitypowered.natives.compression.@org.jspecify.annotations.Nullable VelocityCompressor compressor, final int threshold, final boolean reserveFramePrefix) {
+         this.threshold = threshold;
+         if (compressor == null) {
+             this.encodeBuf = new byte[8192];
+@@ -25,9 +30,15 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             this.deflater = null;
+         }
+         this.compressor = compressor;
++        this.mudReserveFramePrefix = reserveFramePrefix;
+         // Paper end - Use Velocity cipher
+     }
+ 
++    private static boolean mudInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.mudOptimizations.inPlaceFramePrefix;
++    }
++
+     @Override
+     protected void encode(final ChannelHandlerContext ctx, final ByteBuf uncompressed, final ByteBuf out) throws Exception { // Paper - Use Velocity cipher
+         int uncompressedLength = uncompressed.readableBytes();
+@@ -78,6 +89,7 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+     // Paper start - Use Velocity cipher
+     @Override
+     protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final ByteBuf msg, final boolean preferDirect) throws Exception {
++        final ByteBuf output;
+         if (this.compressor != null) {
+             // We allocate bytes to be compressed plus 1 byte. This covers two cases:
+             //
+@@ -87,11 +99,17 @@ public class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
+             //    size the compressed size will ever be is the input size minus one.
+             // - Uncompressed
+             //    This is fairly obvious - we will then have one more than the uncompressed size.
+-            final int initialBufferSize = msg.readableBytes() + 1;
+-            return com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++            final int initialBufferSize = msg.readableBytes() + 1 + (this.mudReserveFramePrefix ? Varint21LengthFieldPrepender.MAX_VARINT21_BYTES : 0);
++            output = com.velocitypowered.natives.util.MoreByteBufUtils.preferredBuffer(ctx.alloc(), this.compressor, initialBufferSize);
++        } else {
++            output = super.allocateBuffer(ctx, msg, preferDirect);
+         }
+ 
+-        return super.allocateBuffer(ctx, msg, preferDirect);
++        if (this.mudReserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+ 
+     @Override
+diff --git a/net/minecraft/network/PacketEncoder.java b/net/minecraft/network/PacketEncoder.java
+index 27316db9eb78660c6f54e1d1ea4dc7d584c7bb55..5b7813d8dba9f2a7f1849c5b72d5e8b7a874d8d2 100644
+--- a/net/minecraft/network/PacketEncoder.java
++++ b/net/minecraft/network/PacketEncoder.java
+@@ -12,9 +12,30 @@ import org.slf4j.Logger;
+ public class PacketEncoder<T extends PacketListener> extends MessageToByteEncoder<Packet<T>> {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private final ProtocolInfo<T> protocolInfo;
++    private final boolean mudReserveFramePrefix;
+ 
+     public PacketEncoder(final ProtocolInfo<T> protocolInfo) {
++        this(protocolInfo, mudInPlacePrefixEnabled());
++    }
++
++    public PacketEncoder(final ProtocolInfo<T> protocolInfo, final boolean reserveFramePrefix) {
+         this.protocolInfo = protocolInfo;
++        this.mudReserveFramePrefix = reserveFramePrefix;
++    }
++
++    private static boolean mudInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.mudOptimizations.inPlaceFramePrefix;
++    }
++
++    @Override
++    protected ByteBuf allocateBuffer(final ChannelHandlerContext ctx, final Packet<T> packet, final boolean preferDirect) throws Exception {
++        final ByteBuf output = super.allocateBuffer(ctx, packet, preferDirect);
++        if (this.mudReserveFramePrefix) {
++            output.ensureWritable(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++            output.setIndex(Varint21LengthFieldPrepender.MAX_VARINT21_BYTES, Varint21LengthFieldPrepender.MAX_VARINT21_BYTES);
++        }
++        return output;
+     }
+ 
+     static final ThreadLocal<java.util.Locale> ADVENTURE_LOCALE = ThreadLocal.withInitial(() -> null); // Paper - adventure; set player's locale
+diff --git a/net/minecraft/network/Varint21FrameDecoder.java b/net/minecraft/network/Varint21FrameDecoder.java
+index a490f5e09a6d615fa939c9838b19bc32680d8069..c37c532030410efaec5f00ee20b4cd1747db6d4f 100644
+--- a/net/minecraft/network/Varint21FrameDecoder.java
++++ b/net/minecraft/network/Varint21FrameDecoder.java
+@@ -13,8 +13,20 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+     private final ByteBuf helperBuf = Unpooled.directBuffer(3);
+     private final @Nullable BandwidthDebugMonitor monitor;
+ 
++    private final boolean mudZeroCopyFrames;
++
+     public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor) {
++        this(monitor, mudZeroCopyEnabled());
++    }
++
++    public Varint21FrameDecoder(final @Nullable BandwidthDebugMonitor monitor, final boolean zeroCopyFrames) {
+         this.monitor = monitor;
++        this.mudZeroCopyFrames = zeroCopyFrames;
++    }
++
++    private static boolean mudZeroCopyEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.mudOptimizations.retainedFrames;
+     }
+ 
+     @Override
+@@ -63,7 +75,7 @@ public class Varint21FrameDecoder extends ByteToMessageDecoder {
+                     this.monitor.onReceive(length + VarInt.getByteSize(length));
+                 }
+ 
+-                out.add(in.readBytes(length));
++                out.add(this.mudZeroCopyFrames ? in.readRetainedSlice(length) : in.readBytes(length));
+             }
+         }
+     }
+diff --git a/net/minecraft/network/Varint21LengthFieldPrepender.java b/net/minecraft/network/Varint21LengthFieldPrepender.java
+index a3f3684a6f00cd0238c5f6122d449814700eab60..9e5fc8da1a9caa9ae4cd528476c6722bff18864c 100644
+--- a/net/minecraft/network/Varint21LengthFieldPrepender.java
++++ b/net/minecraft/network/Varint21LengthFieldPrepender.java
+@@ -4,22 +4,70 @@ import io.netty.buffer.ByteBuf;
+ import io.netty.channel.ChannelHandlerContext;
+ import io.netty.channel.ChannelHandler.Sharable;
+ import io.netty.handler.codec.EncoderException;
+-import io.netty.handler.codec.MessageToByteEncoder;
++import io.netty.handler.codec.MessageToMessageEncoder;
++import java.util.List;
+ 
+ @Sharable
+-public class Varint21LengthFieldPrepender extends MessageToByteEncoder<ByteBuf> {
++public class Varint21LengthFieldPrepender extends MessageToMessageEncoder<ByteBuf> {
+     public static final int MAX_VARINT21_BYTES = 3;
++    private final boolean mudInPlacePrefix;
++
++    public Varint21LengthFieldPrepender() {
++        this(mudInPlacePrefixEnabled());
++    }
++
++    public Varint21LengthFieldPrepender(final boolean inPlacePrefix) {
++        this.mudInPlacePrefix = inPlacePrefix;
++    }
++
++    private static boolean mudInPlacePrefixEnabled() {
++        final io.papermc.paper.configuration.GlobalConfiguration configuration = io.papermc.paper.configuration.GlobalConfiguration.get();
++        return configuration != null && configuration.mudOptimizations.inPlaceFramePrefix;
++    }
+ 
+     @Override
+-    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final ByteBuf out) {
++    protected void encode(final ChannelHandlerContext ctx, final ByteBuf msg, final List<Object> out) {
+         int bodyLength = msg.readableBytes();
+         int headerLength = VarInt.getByteSize(bodyLength);
+         if (headerLength > 3) {
+             throw new EncoderException("Packet too large: size " + bodyLength + " is over 8");
+         }
+ 
+-        out.ensureWritable(headerLength + bodyLength);
+-        VarInt.write(out, bodyLength);
+-        out.writeBytes(msg, msg.readerIndex(), bodyLength);
++        if (this.canPrefixInPlace(msg, headerLength)) {
++            final int prefixIndex = msg.readerIndex() - headerLength;
++            writeVarIntAt(msg, prefixIndex, bodyLength);
++            msg.readerIndex(prefixIndex);
++            out.add(msg.retain());
++            return;
++        }
++
++        final ByteBuf framed = ctx.alloc().ioBuffer(headerLength + bodyLength);
++        try {
++            VarInt.write(framed, bodyLength);
++            framed.writeBytes(msg, msg.readerIndex(), bodyLength);
++            out.add(framed);
++        } catch (final RuntimeException | Error throwable) {
++            framed.release();
++            throw throwable;
++        }
++    }
++
++    private boolean canPrefixInPlace(final ByteBuf buffer, final int headerLength) {
++        return this.mudInPlacePrefix
++            && buffer.readerIndex() >= headerLength
++            && buffer.readerIndex() >= MAX_VARINT21_BYTES
++            && buffer.refCnt() == 1
++            && buffer.unwrap() == null
++            && !(buffer instanceof io.netty.buffer.CompositeByteBuf)
++            && buffer.nioBufferCount() == 1
++            && !buffer.isReadOnly();
++    }
++
++    private static void writeVarIntAt(final ByteBuf buffer, int index, int value) {
++        while ((value & -128) != 0) {
++            buffer.setByte(index++, value & 127 | 128);
++            value >>>= 7;
++        }
++        buffer.setByte(index, value);
+     }
+ }
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 279614d017877ea2ba7c216b9cc874065f5e384d..4fe10665ddeb83bbc0be970578a346ae8507db77 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1406,6 +1406,10 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         profiler.push(entity.typeHolder()::getRegisteredName);
+         profiler.incrementCounter("tickNonPassenger");
+         entity.commonTick();
++        if (io.papermc.paper.optimization.mud.MudPresentation.skipGameplayTick(entity)) {
++            profiler.pop();
++            return; // finally still clears the diagnostic current-entity reference
++        }
+         final boolean isActive = io.papermc.paper.entity.activation.ActivationRange.checkIfActive(entity); // Paper - EAR 2
+         if (isActive) { // Paper - EAR 2
+         entity.tick();

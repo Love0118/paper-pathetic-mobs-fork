@@ -119,14 +119,14 @@ jobs:
             */build/reports/checkstyle/*.xml
 
       - name: Create Paperclip Jar
-        if: fromJSON(steps.determine.outputs.result).action == 'paperclip'
+        if: fromJSON(steps.determine.outputs.result).action == 'paperclip' || github.ref == 'refs/heads/26.3-mud'
         run: ./gradlew createPaperclipJar --stacktrace
 
       - name: Upload Paperclip Jar
-        if: fromJSON(steps.determine.outputs.result).action == 'paperclip'
+        if: fromJSON(steps.determine.outputs.result).action == 'paperclip' || github.ref == 'refs/heads/26.3-mud'
         uses: actions/upload-artifact@v7
         with:
-          name: paper-${{ fromJSON(steps.determine.outputs.result).pr }}
+          name: paper-${{ fromJSON(steps.determine.outputs.result).pr || github.ref_name }}
           path: paper-server/build/libs/paper-paperclip-*.jar
 
       - name: Publish Artifacts

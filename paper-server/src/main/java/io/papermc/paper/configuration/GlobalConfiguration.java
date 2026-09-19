@@ -31,6 +31,16 @@ public class GlobalConfiguration extends ConfigurationPart {
     static final int CURRENT_VERSION = 31; // (when you change the version, change the comment, so it conflicts on rebases): allow-nether property to config
     private static GlobalConfiguration instance;
     public static boolean isFirstStart = false;
+    public MudOptimizations mudOptimizations;
+
+    public class MudOptimizations extends ConfigurationPart {
+        @Comment("Only for MUD presentation mobs explicitly marked mud_presentation_v1, with AI, physics and gravity disabled. Keeps commonTick and tracking; skips vanilla mob gameplay ticks.")
+        public boolean presentationMobTick = false;
+        @Comment("Retain complete input frames instead of copying their payloads. Restart required.")
+        public boolean retainedFrames = false;
+        @Comment("Reserve and write the frame length prefix in exclusively owned packet buffers. Restart required.")
+        public boolean inPlaceFramePrefix = false;
+    }
     public static GlobalConfiguration get() {
         return instance;
     }
