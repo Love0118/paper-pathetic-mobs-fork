@@ -264,6 +264,10 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.yaml.snakeyaml.error.MarkedYAMLException;
 
 public final class CraftServer implements Server {
+    /** Optional main-thread JNI motion batch, guarded by the same MUD presentation contract. */
+    public boolean mudMovePresentationBatch(final org.bukkit.entity.Entity[] entities, final double[] positions, final int count) {
+        return io.papermc.paper.optimization.mud.MudNativeEntities.move(entities, positions, count);
+    }
     private final String serverName = io.papermc.paper.ServerBuildInfo.buildInfo().brandName();
     private final String serverVersion;
     private final String bukkitVersion = Versioning.getBukkitVersion();

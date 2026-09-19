@@ -1,5 +1,6 @@
 .gradle/
 .codegraph/
+native/mud-entities/target/
 build/
 
 # Eclipse stuff
