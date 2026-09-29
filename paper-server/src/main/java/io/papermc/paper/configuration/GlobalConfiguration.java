@@ -8,6 +8,7 @@ import io.papermc.paper.configuration.type.number.IntOr;
 import io.papermc.paper.util.sanitizer.ItemObfuscationBinding;
 import io.papermc.paper.util.sanitizer.OversizedItemComponentSanitizer;
 import java.util.Map;
+import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -101,6 +102,146 @@ public class GlobalConfiguration extends ConfigurationPart {
     public class Spark extends ConfigurationPart {
         public boolean enabled = true;
         public boolean enableImmediately = false;
+    }
+
+    public Optimizations optimizations;
+
+    public class Optimizations extends ConfigurationPart {
+        public PatheticMobPathfinding patheticMobPathfinding;
+        public ZvsManagedMobAi zvsManagedMobAi;
+        public ZvsManagedDamage zvsManagedDamage;
+        public ZvsPlayNetwork zvsPlayNetwork;
+        public ZvsEntityNetworkLod zvsEntityNetworkLod;
+        public ExplosionBroadcastOptimization explosionBroadcastOptimization;
+
+        public class PatheticMobPathfinding extends ConfigurationPart {
+            @Comment(
+                "Uses a bounded two-dimensional pathfinder for safe, flat, single-target WalkNodeEvaluator searches. " +
+                "Unsupported requests fall back to Paper before the two-dimensional engine evaluates the world."
+            )
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on mobs eligible for the two-dimensional pathfinder.")
+            public String markerTag = "zvs_managed";
+            @Comment("Start accumulating a reverse flow field after this many requests for the same fixed objective. Set to 0 to disable.")
+            public int reverseFlowFieldBuildAfterRequests = 4;
+            @Comment("Maximum successful or partial route cells stored by one reverse flow field.")
+            public int reverseFlowFieldMaxCells = 16_384;
+            @Comment("Maximum fixed-objective reverse flow fields cached per world.")
+            public int reverseFlowFieldCacheEntries = 16;
+            @Comment("Maximum collision-safe evaluated 2D cells shared across managed path requests per world.")
+            public int sharedCellCacheEntries = 65_536;
+            @Comment("Collect 2D pathfinding counters. Disabled by default so cache hits stay allocation- and CAS-free.")
+            public boolean metricsEnabled = false;
+        }
+
+        public class ZvsManagedMobAi extends ConfigurationPart {
+            @Comment("Reduces goal and target selector reevaluation for tagged wave mobs while keeping navigation and controls ticking every tick.")
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on mobs eligible for managed AI cadence.")
+            public String markerTag = "zvs_managed";
+            @Comment("Tag that forces vanilla AI cadence for bosses or special managed mobs.")
+            public String fullRateTag = "zvs_ai_full";
+            @Comment("Run full goal/target selector evaluation every N ticks while the mob is far from its target.")
+            public int selectorInterval = 4;
+            @Comment("Use vanilla selector cadence when the current target is within this horizontal distance.")
+            public double fullRateTargetDistance = 12.0D;
+        }
+
+        public class ZvsManagedDamage extends ConfigurationPart {
+            @Comment("Enables the opt-in ZVS managed-damage bridge. Only calls carrying the marker tag use it.")
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on targets submitted through the managed-damage bridge.")
+            public String markerTag = "zvs_managed";
+            @Comment("Event mode: compatibility dispatches every event, hybrid dispatches the first event per target/tick, trusted dispatches none.")
+            public String eventMode = "hybrid";
+            @Comment("Coalesces managed hurt-status packets to one packet per target per tick in hybrid and trusted modes.")
+            public boolean coalesceHurtStatus = true;
+            @Comment("Skips CreatureSpawnEvent only for spawns explicitly submitted through the internal ZVS bridge.")
+            public boolean trustedSpawnEvents = true;
+            @Comment("Routes trusted managed deaths to the registered ZVS handler instead of the global event bus.")
+            public boolean trustedDeathHandler = true;
+            @Comment("Collect managed-damage counters. Disabled by default so per-hit instrumentation does not tax combat.")
+            public boolean metricsEnabled = false;
+        }
+
+        public class ZvsPlayNetwork extends ConfigurationPart {
+            @Comment("Coalesces normal PLAY writes per connection while preserving FIFO packet and listener order.")
+            public boolean enabled = true;
+            @Comment("Batching mode: smart_execution drains at tick end or the count guard, strict_tick holds normal traffic until tick end, interval uses flush-interval-millis.")
+            public String batchingMode = "smart_execution";
+            @Comment("Flush period used by interval mode.")
+            public int flushIntervalMillis = 25;
+            @Comment("Maximum logical packets written before the current batch is flushed. Must be at least 1.")
+            public int maxPacketsPerFlush = 1_024;
+            @Comment("Maximum accumulated encoded outbound-buffer bytes per flush. Set to 0 to disable.")
+            public int maxBatchBytes = 32_000;
+            @Comment("Bytes reserved below the configured batch limit.")
+            public int safetyMarginBytes = 64;
+            @Comment("Queues normal writes and submits one event-loop task per drained batch.")
+            public boolean writeQueue = true;
+            @Comment("Bypasses batching for packets sent outside a server tick thread.")
+            public boolean offThreadBypass = true;
+            @Comment("Bypasses batching for chat and resource-pack packets.")
+            public boolean chatBypass = true;
+            @Comment("Simple or fully-qualified packet class names that flush queued data and send immediately.")
+            public List<String> instantPackets = List.of(
+                "ClientboundHurtAnimationPacket", "ClientboundDamageEventPacket", "ClientboundBlockEntityDataPacket"
+            );
+            @Comment("Simple or fully-qualified packet class names that always use the upstream direct path after ordered draining.")
+            public List<String> ignoredPackets = List.of();
+            @Comment("Custom payload channel identifiers that flush queued data and send immediately.")
+            public List<String> instantChannels = List.of("minecraft:register", "minecraft:unregister");
+            @Comment("Custom payload channel identifiers that use the upstream direct path after ordered draining.")
+            public List<String> ignoredChannels = List.of();
+            @Comment("Merge compatible duplicate effect packets within each ordered write segment.")
+            public boolean packetCoalescing = true;
+            @Comment("Simple or fully-qualified effect packet class names eligible for duplicate merging.")
+            public List<String> coalescePackets = List.of(
+                "ClientboundLevelParticlesPacket", "ClientboundSoundPacket", "ClientboundSoundEntityPacket"
+            );
+            @Comment("Maximum effect packets inspected as one coalescing segment.")
+            public int maxCoalescedPackets = 4_000;
+            @Comment("Replace a dense per-chunk block-change broadcast with one current full-chunk snapshot when it is also smaller.")
+            public boolean massBlockUpdateChunkResend = true;
+            @Comment("Changed blocks in one chunk required before using a full-chunk snapshot.")
+            public int massBlockUpdateThreshold = 512;
+            @Comment("Conservative byte allowance for heightmaps, block entities, and light data in a full-chunk snapshot.")
+            public int massBlockUpdateChunkSafetyBytes = 16_384;
+            @Comment("Log each mass block-update replacement. Disabled by default to keep the hot path quiet.")
+            public boolean logMassBlockUpdateReplacements = false;
+            @Comment("Collect per-packet network counters. Disabled by default so instrumentation does not tax production traffic.")
+            public boolean metricsEnabled = false;
+            @Comment("Use retained slices for complete uncompressed frames instead of copying their payload.")
+            public boolean zeroCopyDecoding = true;
+            @Comment("Prefix exclusively-owned frame buffers in place when sufficient writable headroom is available.")
+            public boolean inPlaceFramePrefix = true;
+        }
+
+        public class ZvsEntityNetworkLod extends ConfigurationPart {
+            @Comment("Reduces movement and head-rotation cadence per viewer for scoreboard-tagged ZVS mobs using absolute recovery syncs.")
+            public boolean enabled = true;
+            @Comment("Scoreboard tag required on entities eligible for network LOD.")
+            public String markerTag = "zvs_managed";
+            @Comment("Entities at or below this horizontal distance use full-rate movement updates.")
+            public int nearDistance = 32;
+            @Comment("Entities at or below this horizontal distance use the medium cadence; farther tracked entities use the far cadence.")
+            public int mediumDistance = 64;
+            @Comment("Send every Nth ServerEntity movement/head emission at medium distance.")
+            public int mediumInterval = 2;
+            @Comment("Send every Nth ServerEntity movement/head emission at far distance.")
+            public int farInterval = 4;
+            @Comment("Maximum ticks a final skipped movement or head update may remain pending after emissions stop.")
+            public int maxRecoveryTicks = 20;
+            @Comment("Collect per-viewer LOD counters. Disabled by default to avoid instrumentation overhead.")
+            public boolean metricsEnabled = false;
+            @Comment("Tag that promotes bosses and special managed mobs to full-rate updates.")
+            public String fullRateTag = "zvs_lod_full";
+        }
+
+        public class ExplosionBroadcastOptimization extends ConfigurationPart {
+            @Comment("Uses Moonrise's maintained nearby-player index before applying the unchanged 64-block explosion packet distance check.")
+            public boolean enabled = true;
+        }
     }
 
     public Proxies proxies;

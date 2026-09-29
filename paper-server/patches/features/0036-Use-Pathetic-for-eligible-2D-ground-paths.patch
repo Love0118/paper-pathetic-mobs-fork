@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 1 Sep 2026 18:42:57 +0900
+Subject: [PATCH] Use Pathetic for eligible 2D ground paths
+
+Dispatch only exact flat WalkNodeEvaluator requests to the bounded 2D engine. Once the engine evaluates a request, its path or no-path result is final so vanilla cannot repeat the same search. Share successful route suffixes per level and invalidate them after block-state changes.
+
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 21878bd770f6c0bc10dd0a67be5bd94d7e16f741..0237ee3b6a78a15cdaa823e4146216e11dab348a 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -172,6 +172,8 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     public static @Nullable BlockPos lastPhysicsProblem; // Spigot
+     public final Map<ServerExplosion.CacheKey, Float> explosionDensityCache = new java.util.HashMap<>(); // Paper - Optimize explosions
++    // Paper - share successful ZVS two-dimensional route suffixes within this level
++    public final io.papermc.paper.optimization.pathfinding.ZvsSharedPathCache zvs2DPathCache = new io.papermc.paper.optimization.pathfinding.ZvsSharedPathCache();
+     public java.util.ArrayDeque<net.minecraft.world.level.block.RedstoneTorchBlock.Toggle> redstoneUpdateInfos; // Paper - Faster redstone torch rapid clock removal; Move from Map in BlockRedstoneTorch to here
+ 
+     public CraftWorld getWorld() {
+@@ -1142,6 +1144,12 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         }
+         // CraftBukkit end
+ 
++        // Paper start - invalidate shared two-dimensional paths after a real block change
++        if (oldState != newState) {
++            this.zvs2DPathCache.invalidate(pos);
++        }
++        // Paper end - invalidate shared two-dimensional paths after a real block change
++
+         return true;
+     }
+ 
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+index b903ae067130b460fca782fa8f37e9405670eeee..eef4a8178bd35d8f934460d4e0841caf624fda23 100644
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -55,6 +55,33 @@ public class PathFinder {
+             return null;
+         }
+ 
++        // Paper start - use a bounded two-dimensional ground path fast path
++        if (!this.captureDebug.getAsBoolean()) {
++            io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.SearchResult optimizedResult;
++            try {
++                optimizedResult = io.papermc.paper.optimization.pathfinding.PatheticMobPathfinding.tryFindPath(
++                    this.nodeEvaluator,
++                    this.nodeEvaluator.currentContext,
++                    level,
++                    entity,
++                    from,
++                    targets,
++                    maxPathLength,
++                    reachRange,
++                    this.maxVisitedNodes,
++                    maxVisitedNodesMultiplier
++                );
++            } catch (RuntimeException | Error throwable) {
++                this.nodeEvaluator.done();
++                throw throwable;
++            }
++            if (optimizedResult.handled()) {
++                this.nodeEvaluator.done();
++                return optimizedResult.path();
++            }
++        }
++        // Paper end - use a bounded two-dimensional ground path fast path
++
+         // Paper start - Perf: remove streams and optimize collection
+         List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayList();
+         for (BlockPos pos : targets) {

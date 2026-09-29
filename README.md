@@ -8,6 +8,9 @@ Paper [![Version](https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2
 
 The most widely used, high-performance Minecraft server that aims to fix gameplay and mechanics inconsistencies.
 
+This branch is the ZVS fork for Paper 26.3. See [migration and verification](ZVS_26_3_MIGRATION.md)
+and [ZVS configuration](ZVS_CONFIGURATION.md) for the fork-specific changes.
+
 
 **Support and Project Discussion:**
 - [Our forums](https://forums.papermc.io/) or [Discord](https://discord.gg/papermc)

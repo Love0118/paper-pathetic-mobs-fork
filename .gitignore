@@ -41,6 +41,10 @@ out/
 
 # other stuff
 run/
+artifacts/*.jar
+.codegraph/
+.migration-*
+.git-zvs-migration.patch
 logs/
 
 !gradle/wrapper/gradle-wrapper.jar

@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 19:03:49 +0900
+Subject: [PATCH] Match 26.3 damage statistic overflow guards in managed fast
+ path
+
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index da56f576e128e16e8c439f01b10958d3c607b76f..d388c129d0ada0ab5c64850f6e227a2f3855f7cf 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -2569,7 +2569,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+         if (damage.resistance() < 0.0F) {
+             final float damageResisted = -damage.resistance();
+-            if (damageResisted > 0.0F && damageResisted < Float.MAX_VALUE) {
++            if (damageResisted > 0.0F && damageResisted < 3.4028235E37F) {
+                 if (this instanceof ServerPlayer serverPlayer) {
+                     serverPlayer.awardStat(Stats.DAMAGE_RESISTED, Math.round(damageResisted * 10.0F));
+                 } else if (source.getEntity() instanceof ServerPlayer serverPlayer) {
+@@ -2594,10 +2594,10 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         final boolean human = this instanceof net.minecraft.world.entity.player.Player;
+         final float absorbedDamage = -damage.absorption();
+         this.setAbsorptionAmount(Math.max(this.getAbsorptionAmount() - absorbedDamage, 0.0F));
+-        if (absorbedDamage > 0.0F && absorbedDamage < Float.MAX_VALUE && this instanceof Player player) {
++        if (absorbedDamage > 0.0F && absorbedDamage < 3.4028235E37F && this instanceof Player player) {
+             player.awardStat(Stats.DAMAGE_ABSORBED, Math.round(absorbedDamage * 10.0F));
+         }
+-        if (absorbedDamage > 0.0F && absorbedDamage < Float.MAX_VALUE && source.getEntity() instanceof ServerPlayer serverPlayer) {
++        if (absorbedDamage > 0.0F && absorbedDamage < 3.4028235E37F && source.getEntity() instanceof ServerPlayer serverPlayer) {
+             serverPlayer.awardStat(Stats.DAMAGE_DEALT_ABSORBED, Math.round(absorbedDamage * 10.0F));
+         }
+ 
+@@ -2606,7 +2606,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 ((net.minecraft.world.entity.player.Player)this).causeFoodExhaustion(
+                     source.getFoodExhaustion(), org.bukkit.event.entity.EntityExhaustionEvent.ExhaustionReason.DAMAGED
+                 );
+-                if (finalDamage < Float.MAX_VALUE) {
++                if (finalDamage < 3.4028235E37F) {
+                     ((net.minecraft.world.entity.player.Player)this).awardStat(Stats.DAMAGE_TAKEN, Math.round(finalDamage * 10.0F));
+                 }
+             }
+@@ -2623,7 +2623,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             if (this instanceof ServerPlayer serverPlayer) {
+                 CriteriaTriggers.ENTITY_HURT_PLAYER.trigger(serverPlayer, source, originalDamage, finalDamage, true);
+                 final float damageBlocked = -damage.blocking();
+-                if (damageBlocked > 0.0F && damageBlocked < Float.MAX_VALUE) {
++                if (damageBlocked > 0.0F && damageBlocked < 3.4028235E37F) {
+                     serverPlayer.awardStat(Stats.DAMAGE_BLOCKED_BY_SHIELD, Math.round(damageBlocked * 10.0F));
+                 }
+             }
