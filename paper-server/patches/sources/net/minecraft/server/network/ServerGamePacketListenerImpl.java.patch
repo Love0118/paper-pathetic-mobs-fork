@@ -1042,7 +1042,36 @@
          if (this.hasClientLoaded()) {
              BlockPos pos = packet.getPos();
              this.player.resetLastActionTime();
-@@ -1364,33 +_,96 @@
+@@ -1350,47 +_,118 @@
+                         return;
+                     } else {
+                         ItemStack itemInHand = this.player.getItemInHand(InteractionHand.MAIN_HAND);
+-                        if (this.player.cannotAttackWithItem(itemInHand, 5)) {
+-                            return;
+-                        }
+-
++                        // ZVS start - 26.3 no longer sends a separate arm-swing packet for spear attacks.
+                         PiercingWeapon piercingWeapon = itemInHand.get(DataComponents.PIERCING_WEAPON);
+-                        if (piercingWeapon != null) {
+-                            piercingWeapon.attack(this.player, EquipmentSlot.MAINHAND);
+-                        }
++                        if (piercingWeapon == null) {
++                            return;
++                        }
++                        // Plugin projectile cooldowns are independent of the native spear charge gate.
++                        io.papermc.paper.event.player.PlayerArmSwingEvent swingEvent = new io.papermc.paper.event.player.PlayerArmSwingEvent(this.getCraftPlayer(), org.bukkit.inventory.EquipmentSlot.HAND);
++                        if (!swingEvent.callEvent()) {
++                            return;
++                        }
++                        // ZVS end
++                        if (this.player.cannotAttackWithItem(itemInHand, 5)) {
++                            return;
++                        }
++
++                        piercingWeapon.attack(this.player, EquipmentSlot.MAINHAND);
+ 
+                         return;
+                     }
                  case SWAP_ITEM_WITH_OFFHAND:
                      if (!this.player.isSpectator()) {
                          ItemStack swap = this.player.getItemInHand(InteractionHand.OFF_HAND);

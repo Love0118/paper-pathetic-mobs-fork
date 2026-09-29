@@ -27,6 +27,21 @@ requests, and immediate protocol/critical-packet barriers. Existing
 
 Official 26.3 changes are retained alongside the ported ZVS optimizations.
 
+## Spear input compatibility follow-up
+
+Live gameplay exposed a missing event that the original synthetic migration
+benchmarks did not exercise. The 26.3 client no longer sends a separate swing
+packet for a spear's `STAB` action, but ZVS launches Excalibur and staff
+projectiles from `PlayerAnimationEvent`. The native stab handler now emits one
+main-hand `PlayerArmSwingEvent` before the native charge check. This lets ZVS
+apply its own projectile cooldown; cancelling the event cancels that stab.
+The native attack still uses its original charge check and damage path.
+
+Three tests invoke the actual packet handler and verify normal input, input
+rejected by native charge, and event cancellation. All three reproduced the
+missing event before the fix and pass with the patch. The performance figures
+below describe the earlier `d4af8cd` artifact, not a new gameplay benchmark.
+
 ## Client HUD and resource pack
 
 Use the updated ZVS plugin from
