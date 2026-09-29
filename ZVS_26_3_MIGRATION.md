@@ -42,6 +42,14 @@ rejected by native charge, and event cancellation. All three reproduced the
 missing event before the fix and pass with the patch. The performance figures
 below describe the earlier `d4af8cd` artifact, not a new gameplay benchmark.
 
+Use `paper-26.3-build135-zvs-r2.jar` with the companion ZVS plugin revision
+`341bb3f` for this follow-up. The plugin reduces boss-display interpolation to
+one tick, matching its animation and movement update cadence. The patched
+server passed the four-player Excalibur event/combat fixture and the complete
+Death Knight fixture (12 phases, 97 peak mobs, movement and cleanup checks).
+The plugin's 803 tests and PMD also pass. Artifact hashes and exact validation
+scope are recorded in [`artifacts/gameplay-compatibility.json`](artifacts/gameplay-compatibility.json).
+
 ## Client HUD and resource pack
 
 Use the updated ZVS plugin from

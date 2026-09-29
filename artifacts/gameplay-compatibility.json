@@ -1,0 +1,32 @@
+{
+  "runtimeSourceRevision": "d04b7c729e7657bada11695bcde0d89befc2c114",
+  "serverJar": "paper-26.3-build135-zvs-r2.jar",
+  "serverSha256": "2dddb252da999f9dbdbed2f56dff925c1ddf447f23b0bd9c18a74111d6ed29d1",
+  "pluginSourceRevision": "341bb3fc0969e28f01cbc7135fa157768ac4021f",
+  "pluginJar": "ZombieVsSpear-2.4.0.jar",
+  "pluginSha256": "ed0b14e6ca618fd91116e4ccf3a3616e2adffe1e06da5276bdb9d8d9d9dda003",
+  "packetRegressionTests": {
+    "beforeFailed": 3,
+    "afterPassed": 3,
+    "checks": [
+      "One main-hand swing event for STAB plus native attack",
+      "Plugin input still delivered when native charge rejects damage",
+      "Cancelled swing prevents the stab"
+    ]
+  },
+  "pluginVerify": {
+    "tests": 803,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "pmd": "PASS"
+  },
+  "runtimeSmokes": {
+    "excalibur": "PASS: four actors through PlayerArmSwingEvent, damage callbacks, combo zones, cleanup",
+    "deathKnight": "PASS: 12 phases, 97 peak mobs, one-tick moving displays, full cycle and cleanup"
+  },
+  "limitations": [
+    "The historical performance benchmark belongs to the previous d4af8cd artifact",
+    "Final client appearance requires a live restart and gameplay check"
+  ]
+}
