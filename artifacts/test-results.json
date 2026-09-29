@@ -1,0 +1,20 @@
+{
+  "paper-api": {
+    "tests": 481,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 2
+  },
+  "paper-server": {
+    "tests": 10133,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 86
+  },
+  "paper-checkstyle": {
+    "tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  }
+}

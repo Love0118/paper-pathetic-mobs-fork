@@ -1,5 +1,7 @@
 # ZVS Paper 26.2 Implementation Checklist
 
+> Historical 26.2 baseline. Current migration results: [ZVS_26_3_MIGRATION.md](ZVS_26_3_MIGRATION.md).
+
 Last updated: 2026-09-02
 
 Update this file immediately after a task is implemented and verified. A task is

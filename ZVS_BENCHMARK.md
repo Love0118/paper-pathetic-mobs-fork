@@ -1,5 +1,7 @@
 # ZVS late-round benchmark
 
+> Historical 26.2 baseline. Current migration results: [ZVS_26_3_MIGRATION.md](ZVS_26_3_MIGRATION.md).
+
 Use the same world, plugin data, player count, client positions, JVM, heap, and
 round seed for every A/B run. Run each variant in a separate directory so a
 previous server's generated configuration or world state cannot contaminate

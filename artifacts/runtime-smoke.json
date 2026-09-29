@@ -1,0 +1,23 @@
+{
+  "runtimeSourceRevision": "d4af8cdfc63b3c77f539c539055c0d36f30310a9",
+  "serverJar": "paper-26.3-build135-zvs.jar",
+  "serverSha256": "f8162334a71a6a7e6bdccc0608218fee88c6459bd0883d3ed37c6db84b983677",
+  "modes": [
+    {
+      "mode": "hybrid",
+      "result": "PASS"
+    },
+    {
+      "mode": "trusted",
+      "result": "PASS"
+    }
+  ],
+  "checks": [
+    "armor/resistance/absorption parity",
+    "ordered damage deltas",
+    "mode-specific event cadence",
+    "synchronous death and trusted death callback",
+    "trusted spawn suppression",
+    "untagged fallback"
+  ]
+}

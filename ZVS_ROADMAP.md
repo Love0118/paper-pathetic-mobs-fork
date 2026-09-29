@@ -1,5 +1,7 @@
 # ZVS Paper 26.2 Optimization Roadmap
 
+> Historical 26.2 baseline. Current migration results: [ZVS_26_3_MIGRATION.md](ZVS_26_3_MIGRATION.md).
+
 This repository is a dedicated Paper 26.2 build 121 fork for the
 ZombieVsSpear workload. It is based on upstream Paper commit
 `a2a42c5b12249aaba42a347327fd930a1f94af06` and tracks the 26.1.2

@@ -163,7 +163,7 @@ applies per-player distance budgets, and coalesces display/name state.
 ## Rollback
 
 Disable `pathetic-mob-pathfinding`, `zvs-managed-damage`, `zvs-managed-mob-ai`,
-`zvs-play-network`, `zvs-entity-network-lod`, and
+`zvs-play-network`, `zvs-entity-network-lod`, `zvs-block-intersections`, and
 `explosion-broadcast-optimization`, then restart.
 Also disable the nested framing and dense-update toggles if a fully upstream
 network path is required. Keep `event-mode: compatibility` wherever every-hit
