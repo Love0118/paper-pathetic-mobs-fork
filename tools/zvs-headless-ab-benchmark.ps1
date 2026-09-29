@@ -135,6 +135,7 @@ max-players=1
 motd=ZVS headless A/B benchmark
 online-mode=false
 pause-when-empty-seconds=-1
+server-ip=127.0.0.1
 server-port=0
 simulation-distance=10
 spawn-animals=false

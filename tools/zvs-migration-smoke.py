@@ -1,5 +1,6 @@
 """Compile and run the migration probe in a disposable server, using an accepted EULA file."""
 import argparse
+import os
 import pathlib
 import shutil
 import subprocess
@@ -20,7 +21,7 @@ classes.mkdir()
 deps = [args.api_jar.resolve()] + [p for p in args.gradle_cache.rglob('*.jar')
     if any(k in str(p) for k in ('net.kyori', 'org.jetbrains', 'org.jspecify', 'com.google.guava'))]
 argfile = root/'javac.args'
-argfile.write_text('-cp\n"' + ';'.join(p.as_posix() for p in deps) + '"\n-d\n"'
+argfile.write_text('-cp\n"' + os.pathsep.join(p.as_posix() for p in deps) + '"\n-d\n"'
     + classes.as_posix() + '"\n"' + (pathlib.Path(__file__).parent/'ZvsMigrationSmoke.java').resolve().as_posix() + '"\n')
 subprocess.run(['javac', '@'+str(argfile)], check=True)
 probe = root/'ZvsMigrationSmoke.jar'

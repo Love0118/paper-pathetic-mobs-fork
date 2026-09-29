@@ -26,6 +26,15 @@ target distance as their gradient, and are isolated by caller range. Evaluated
 cells are shared by structural mob profile and invalidated by overlapping
 section revisions. Metrics are off by default to avoid hot-path counters.
 
+## `zvs-block-intersections`
+
+Under `optimizations.zvs-block-intersections`: `enabled: true`,
+`marker-tag: zvs_managed`. It reuses bounded temporary traversal storage for
+tagged mobs. Block visitation order, collision geometry and block/fluid effects
+remain vanilla. Nested calls use independent storage; exceptions and early
+returns release the scratch state. It does not cache block results or bypass
+checks. Disable this section independently to restore upstream allocation.
+
 ## `zvs-managed-damage`
 
 - `enabled: true`

@@ -109,10 +109,17 @@ public class GlobalConfiguration extends ConfigurationPart {
     public class Optimizations extends ConfigurationPart {
         public PatheticMobPathfinding patheticMobPathfinding;
         public ZvsManagedMobAi zvsManagedMobAi;
+        public ZvsBlockIntersections zvsBlockIntersections;
         public ZvsManagedDamage zvsManagedDamage;
         public ZvsPlayNetwork zvsPlayNetwork;
         public ZvsEntityNetworkLod zvsEntityNetworkLod;
         public ExplosionBroadcastOptimization explosionBroadcastOptimization;
+
+        public class ZvsBlockIntersections extends ConfigurationPart {
+            @Comment("Reuse temporary block-intersection storage for tagged mobs; does not skip or reorder block effects.")
+            public boolean enabled = true;
+            public String markerTag = "zvs_managed";
+        }
 
         public class PatheticMobPathfinding extends ConfigurationPart {
             @Comment(

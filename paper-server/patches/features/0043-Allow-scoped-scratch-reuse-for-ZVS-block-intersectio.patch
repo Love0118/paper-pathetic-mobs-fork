@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SIMJAEYUN001 <SIMJAEYUN001@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 19:28:23 +0900
+Subject: [PATCH] Allow scoped scratch reuse for ZVS block intersection
+ traversal
+
+
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index cf3619b6de23f32e9e5a81fbe287fb438ecfcabc..2e441169d009d31035789599f0bcc32304fdd991 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -1879,7 +1879,8 @@ public abstract class Entity
+         boolean debugEntityBlockIntersections = this.level instanceof ServerLevel serverLevel
+             && serverLevel.getServer().debugSubscribers().hasAnySubscriberFor(DebugSubscriptions.ENTITY_BLOCK_INTERSECTIONS);
+         AtomicInteger iterations = new AtomicInteger();
+-        BlockGetter.forEachBlockIntersectedBetween(
++        io.papermc.paper.optimization.zvs.ZvsBlockIntersections.visit(
++            this,
+             from,
+             to,
+             deflatedBoundingBoxAtTarget,
+diff --git a/net/minecraft/world/level/BlockGetter.java b/net/minecraft/world/level/BlockGetter.java
+index 2a4c928281c7e455d6f210aeb599881855d328f8..da4caeada3eb517363102b28099a152f4fdae09a 100644
+--- a/net/minecraft/world/level/BlockGetter.java
++++ b/net/minecraft/world/level/BlockGetter.java
+@@ -207,6 +207,12 @@ public interface BlockGetter extends LevelHeightAccessor {
+     }
+ 
+     static boolean forEachBlockIntersectedBetween(final Vec3 from, final Vec3 to, final AABB aabbAtTarget, final BlockGetter.BlockStepVisitor visitor) {
++        return forEachBlockIntersectedBetween(from, to, aabbAtTarget, visitor, null);
++    }
++
++    // Paper - caller-owned scratch storage; the traversal algorithm and visitor ordering stay vanilla.
++    static boolean forEachBlockIntersectedBetween(final Vec3 from, final Vec3 to, final AABB aabbAtTarget,
++                                                  final BlockGetter.BlockStepVisitor visitor, final @Nullable LongSet scratch) {
+         Vec3 travel = to.subtract(from);
+         if (travel.lengthSqr() < Mth.square(1.0E-5F)) {
+             for (BlockPos blockPos : BlockPos.betweenClosed(aabbAtTarget)) {
+@@ -217,7 +223,8 @@ public interface BlockGetter extends LevelHeightAccessor {
+ 
+             return true;
+         } else {
+-            LongSet visitedBlocks = new LongOpenHashSet();
++            LongSet visitedBlocks = scratch == null ? new LongOpenHashSet() : scratch;
++            visitedBlocks.clear();
+ 
+             for (BlockPos blockPos : BlockPos.betweenCornersInDirection(aabbAtTarget.move(travel.scale(-1.0)), travel)) {
+                 if (!visitor.visit(blockPos, 0)) {
