@@ -27,6 +27,25 @@ requests, and immediate protocol/critical-packet barriers. Existing
 
 Official 26.3 changes are retained alongside the ported ZVS optimizations.
 
+## Client HUD and resource pack
+
+Use the updated ZVS plugin from
+[`spear-vs-zombie` revision `0368113`](https://github.com/Love0118/spear-vs-zombie/commit/0368113f45b012ef780f55ba522c1a1173f48c84)
+on its `26.3-zvs` branch. This plugin update is required separately from the
+server fork: it generates format-specific 26.2/26.3 overlays, ports the HUD text
+shaders to 26.3 ShaderC/OIT, and converts the removed model shading field while
+preserving the base 26.2 models. The original generated pack was limited to
+format 88 and did not select a HUD shader overlay on 26.3.
+
+The plugin follow-up passed 803 tests and static analysis, native 26.2/26.3 pack
+metadata parsing, 96 custom shader compilations against 96 vanilla controls,
+4,157 native model parses, and 215 native shading-field checks. These are
+compiler/parser checks; final in-game HUD rendering and FPS remain unmeasured.
+See the [resource-pack compatibility report](https://github.com/Love0118/spear-vs-zombie/blob/0368113f45b012ef780f55ba522c1a1173f48c84/docs/RESOURCE_PACK_26_3.md)
+for reproducible commands and delivery checksums. No server runtime changes were
+needed for this follow-up, so the server JAR and performance results below remain
+unchanged.
+
 ## Verification
 
 Full Gradle build: 481 API tests (2 skipped), 10,133 server tests (86 skipped),
