@@ -302,9 +302,7 @@ public final class PatheticMobPathfinding {
         if (maxIterations <= 0) {
             return null;
         }
-        final PriorityQueue<AStarNode> frontier = new PriorityQueue<>(
-            Comparator.comparingDouble(AStarNode::score).thenComparingInt(AStarNode::heuristic)
-        );
+        final PriorityQueue<AStarNode> frontier = new PriorityQueue<>();
         final Long2ObjectOpenHashMap<AStarNode> bestByPosition = new Long2ObjectOpenHashMap<>(256);
         final int startHeuristic = horizontalHeuristic(start.x, start.z, target, accuracy);
         final AStarNode startNode = new AStarNode(
@@ -727,7 +725,7 @@ public final class PatheticMobPathfinding {
         return Math.min(1024, Math.max(4, requested));
     }
 
-    private record AStarNode(
+    record AStarNode(
         long position,
         int x,
         int y,
@@ -737,9 +735,16 @@ public final class PatheticMobPathfinding {
         int steps,
         @Nullable AStarNode parent,
         PatheticNavigationPoint point
-    ) {
+    ) implements Comparable<AStarNode> {
         double score() {
             return this.cost + this.heuristic;
+        }
+
+        @Override
+        public int compareTo(final AStarNode other) {
+            // Preserve score/heuristic ordering without chained comparator dispatch in the frontier heap.
+            final int scoreOrder = Double.compare(this.score(), other.score());
+            return scoreOrder != 0 ? scoreOrder : Integer.compare(this.heuristic, other.heuristic);
         }
     }
 

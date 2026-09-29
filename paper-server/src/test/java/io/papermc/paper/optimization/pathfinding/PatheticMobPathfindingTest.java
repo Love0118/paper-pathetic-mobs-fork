@@ -2,9 +2,12 @@ package io.papermc.paper.optimization.pathfinding;
 
 import de.bsommerfeld.pathetic.api.pathing.processing.Cost;
 import de.bsommerfeld.pathetic.api.wrapper.PathPosition;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,6 +39,32 @@ import static org.mockito.Mockito.when;
 
 @Normal
 class PatheticMobPathfindingTest {
+    @Test
+    void frontierPreservesLegacyOrderingIncludingTies() {
+        final PriorityQueue<PatheticMobPathfinding.AStarNode> legacy = new PriorityQueue<>(
+            Comparator.comparingDouble(PatheticMobPathfinding.AStarNode::score)
+                .thenComparingInt(PatheticMobPathfinding.AStarNode::heuristic)
+        );
+        final PriorityQueue<PatheticMobPathfinding.AStarNode> direct = new PriorityQueue<>();
+        final Random random = new Random(263);
+        final PatheticNavigationPoint point = new PatheticNavigationPoint(true, Cost.ZERO, PathType.WALKABLE, 0.0F);
+        final double[] costs = {0.0D, -0.0D, 1.0D, 1.5D, 4.0D, Double.MAX_VALUE, Double.POSITIVE_INFINITY, Double.NaN};
+        for (int index = 0; index < 10_000; index++) {
+            final var node = new PatheticMobPathfinding.AStarNode(
+                index, index, 64, 0, costs[random.nextInt(costs.length)], random.nextInt(8), 0, null, point
+            );
+            legacy.add(node);
+            direct.add(node);
+            if (index % 3 == 0) {
+                assertSame(legacy.remove(), direct.remove());
+            }
+        }
+        while (!legacy.isEmpty()) {
+            assertSame(legacy.remove(), direct.remove());
+        }
+        assertTrue(direct.isEmpty());
+    }
+
     @Test
     void onlyExactVanillaWalkEvaluatorFlatRequestsAreEligible() {
         final Node start = walkableNode(0, 64, 0);
